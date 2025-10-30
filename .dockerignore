@@ -8,7 +8,9 @@ npm-debug.log
 .git
 .gitignore
 .vscode
-.env.example
+.env
+.env.*
+!.env.docker
 
 # Ignore test files
 test
@@ -20,17 +22,21 @@ tests
 docs
 examples
 
-# Ignore build artifacts (we copy from builder stage)
+# Ignore build artifacts from local builds
 dist
 
-# Ignore TypeScript source (we only need compiled JS)
-src
-tsconfig.json
-
 # Ignore docker files
-Dockerfile
 docker-compose.yml
+docker-compose.prod.yml
 .dockerignore
 
-# Ignore scripts
-scripts
+# Ignore scripts (test scripts)
+scripts/*.js
+!scripts/package.json
+
+# Ignore CI/CD files
+.github
+
+# Ignore logs
+logs
+*.log
