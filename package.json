@@ -7,12 +7,23 @@
     "dev": "ts-node-dev --respawn --transpile-only src/index.ts",
     "debug": "node --inspect -r ts-node/register src/index.ts",
     "build": "tsc",
+    "build:clean": "rm -rf dist && npm run build",
     "start": "node dist/index.js",
-    "lint": "eslint . --ext .ts"
+    "start:prod": "NODE_ENV=production node dist/index.js",
+    "lint": "eslint . --ext .ts",
+    "lint:fix": "eslint . --ext .ts --fix",
+    "test": "echo \"No tests yet\" && exit 0",
+    "docker:build": "docker build -t mqtt-gps-collector:latest .",
+    "docker:run": "docker run -d --name mqtt-gps-collector -p 3000:3000 --env-file .env mqtt-gps-collector:latest",
+    "docker:stop": "docker stop mqtt-gps-collector && docker rm mqtt-gps-collector"
   },
-  "keywords": ["mqtt", "redis", "timescaledb", "socketio", "iot"],
+  "keywords": ["mqtt", "redis", "timescaledb", "socketio", "iot", "gps", "telemetry"],
   "author": "",
   "license": "MIT",
+  "engines": {
+    "node": ">=20.0.0",
+    "npm": ">=9.0.0"
+  },
   "dependencies": {
     "mqtt": "^5.3.5",
     "socket.io": "^4.6.1",
@@ -26,6 +37,9 @@
     "@types/express": "^4.17.21",
     "@types/node": "^20.11.19",
     "@types/pg": "^8.11.0",
+    "@typescript-eslint/eslint-plugin": "^6.21.0",
+    "@typescript-eslint/parser": "^6.21.0",
+    "eslint": "^8.56.0",
     "typescript": "^5.3.3",
     "ts-node": "^10.9.2",
     "ts-node-dev": "^2.0.0"

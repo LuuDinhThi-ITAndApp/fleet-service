@@ -9,8 +9,8 @@ WORKDIR /app
 COPY package*.json ./
 COPY tsconfig.json ./
 
-# Install dependencies
-RUN npm ci --only=production && \
+# Install ALL dependencies (including devDependencies for build)
+RUN npm ci && \
     npm cache clean --force
 
 # Copy source code
