@@ -1,0 +1,36 @@
+# Ignore node_modules
+node_modules
+npm-debug.log
+
+# Ignore development files
+*.md
+!README.md
+.git
+.gitignore
+.vscode
+.env.example
+
+# Ignore test files
+test
+tests
+*.test.ts
+*.test.js
+
+# Ignore documentation
+docs
+examples
+
+# Ignore build artifacts (we copy from builder stage)
+dist
+
+# Ignore TypeScript source (we only need compiled JS)
+src
+tsconfig.json
+
+# Ignore docker files
+Dockerfile
+docker-compose.yml
+.dockerignore
+
+# Ignore scripts
+scripts
