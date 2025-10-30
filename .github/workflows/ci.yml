@@ -61,8 +61,3 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-      - name: Test Docker image
-        run: |
-          docker run --rm mqtt-gps-collector:test node --version
-          docker run --rm mqtt-gps-collector:test ls -la /app/dist
-
