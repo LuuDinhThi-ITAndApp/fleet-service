@@ -1,7 +1,7 @@
 import mqtt, { MqttClient } from 'mqtt';
 import { config } from '../config';
 import { logger } from '../utils/logger';
-import { EdgeEvent, GPSDataPayload, GPSDataPoint } from '../types';
+import { EdgeEvent, GPSDataPayload, GPSDataPoint, DriverRequestPayload, DriverInfoPayload } from '../types';
 import { redisClient } from './redis';
 import { timescaleDB } from './timescaledb';
 import { socketIOServer } from '../server/socketio';
@@ -57,12 +57,19 @@ class MQTTService {
   private subscribe(): void {
     if (!this.client) return;
 
-    this.client.subscribe(config.mqtt.topic, { qos: 1 }, (err) => {
-      if (err) {
-        logger.error('MQTT subscription error:', err);
-      } else {
-        logger.info(`Subscribed to topic: ${config.mqtt.topic}`);
-      }
+    const topics = [
+      config.mqtt.topics.gpsData,
+      config.mqtt.topics.driverRequest,
+    ];
+
+    topics.forEach(topic => {
+      this.client!.subscribe(topic, { qos: 1 }, (err) => {
+        if (err) {
+          logger.error(`MQTT subscription error for ${topic}:`, err);
+        } else {
+          logger.info(`Subscribed to topic: ${topic}`);
+        }
+      });
     });
   }
 
@@ -81,7 +88,12 @@ class MQTTService {
       // Check if this is a GPS data message
       if (topic.includes('operation_monitoring/gps_data')) {
         await this.handleGPSData(deviceId, message as GPSDataPayload);
-      } else {
+      }
+      // Check if this is a driver request message
+      else if (topic.includes('driving_session/driver_request')) {
+        await this.handleDriverRequest(deviceId, message as DriverRequestPayload);
+      }
+      else {
         // Handle generic event
         const event: EdgeEvent = {
           device_id: deviceId,
@@ -183,6 +195,67 @@ class MQTTService {
       await timescaleDB.insertGPSDataBatch(deviceId, payload);
     } catch (error) {
       logger.error('Error storing GPS data:', error);
+    }
+  }
+
+  /**
+   * Handle driver request messages
+   */
+  private async handleDriverRequest(deviceId: string, payload: DriverRequestPayload): Promise<void> {
+    try {
+      logger.info(`Received driver request from device: ${deviceId}`);
+      logger.debug(`Driver RFID: ${payload.request_data.driver_rfid}`);
+
+      const driverInfo: DriverInfoPayload = {
+        time_stamp: Math.floor(Date.now() / 1000),
+        message_id: payload.message_id,
+        driver_information: {
+          driver_information: {
+            driver_name: 'Jane Doe',
+            driver_license_number: 'DL123456789',
+          },
+        },
+      };
+
+      await this.publishDriverInfo(deviceId, driverInfo);
+
+      socketIOServer.emit('driver:request', {
+        device_id: deviceId,
+        ...payload,
+      });
+
+      socketIOServer.emit('driver:info', {
+        device_id: deviceId,
+        ...driverInfo,
+      });
+
+    } catch (error) {
+      logger.error('Error handling driver request:', error);
+    }
+  }
+
+  /**
+   * Publish driver info to MQTT topic
+   */
+  private async publishDriverInfo(deviceId: string, driverInfo: DriverInfoPayload): Promise<void> {
+    try {
+      if (!this.client) {
+        logger.error('MQTT client not connected');
+        return;
+      }
+
+      const topic = `fms/${deviceId}/driving_session/driver_info`;
+      const payload = JSON.stringify(driverInfo);
+
+      this.client.publish(topic, payload, { qos: 1 }, (err) => {
+        if (err) {
+          logger.error(`Failed to publish driver info to ${topic}:`, err);
+        } else {
+          logger.info(`Published driver info to ${topic}`);
+        }
+      });
+    } catch (error) {
+      logger.error('Error publishing driver info:', error);
     }
   }
 

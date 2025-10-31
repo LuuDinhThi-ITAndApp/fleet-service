@@ -7,7 +7,10 @@ export const config = {
     brokerUrl: process.env.MQTT_BROKER_URL || 'mqtt://localhost:1883',
     username: process.env.MQTT_USERNAME,
     password: process.env.MQTT_PASSWORD,
-    topic: process.env.MQTT_TOPIC || 'fms/+/operation_monitoring/gps_data',
+    topics: {
+      gpsData: process.env.MQTT_TOPIC_GPS || 'fms/+/operation_monitoring/gps_data',
+      driverRequest: process.env.MQTT_TOPIC_DRIVER_REQUEST || 'fms/+/driving_session/driver_request',
+    },
     clientId: `mqtt_service_${Math.random().toString(16).slice(3)}`,
   },
   redis: {

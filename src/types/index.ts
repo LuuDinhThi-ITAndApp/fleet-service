@@ -63,3 +63,29 @@ export interface GPSDataRow {
   gnss_status: boolean;
   created_at?: Date;
 }
+
+// Driver Request Types
+export interface DriverRequestData {
+  driver_image: string;
+  driver_rfid: string;
+}
+
+export interface DriverRequestPayload {
+  time_stamp: number;
+  message_id: string;
+  request_data: DriverRequestData;
+}
+
+// Driver Info Types
+export interface DriverInformation {
+  driver_name: string;
+  driver_license_number: string;
+}
+
+export interface DriverInfoPayload {
+  time_stamp: number;
+  message_id: string;
+  driver_information: {
+    driver_information: DriverInformation;
+  };
+}
