@@ -10,7 +10,7 @@ export interface GPSDataPoint {
 export interface GPSDataPayload {
   time_stamp: number;
   message_id: string;
-  gps_data: GPSDataPoint[];
+  journey_data: GPSDataPoint[];
 }
 
 // General Event Types
