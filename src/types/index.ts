@@ -66,8 +66,8 @@ export interface GPSDataRow {
 
 // Driver Request Types
 export interface DriverRequestData {
-  driver_image: string;
-  driver_rfid: string;
+  driver_image?: string;
+  driver_rfid?: string;
 }
 
 export interface DriverRequestPayload {
@@ -88,4 +88,74 @@ export interface DriverInfoPayload {
   driver_information: {
     driver_information: DriverInformation;
   };
+}
+
+// Driver Check-in Types
+export interface CheckInLocation {
+  gps_timestamp: number;
+  latitude: number;
+  longitude: number;
+  accuracy: number;
+}
+
+export interface CheckInData {
+  driver_information: {
+    driver_name: string;
+    driver_license_number: string;
+  };
+  check_in_timestamp: number;
+  CheckInLocation: CheckInLocation;
+}
+
+export interface DriverCheckInPayload {
+  time_stamp: number;
+  message_id: string;
+  check_in_data: CheckInData;
+}
+
+// Driver Check-out Confirm Request Types
+export interface CheckOutConfirmRequestData {
+  driver_image?: string;
+  driver_rfid?: string;
+}
+
+export interface CheckOutConfirmRequestPayload {
+  time_stamp: number;
+  message_id: string;
+  request_data: CheckOutConfirmRequestData;
+}
+
+// Driver Check-out Confirm Response Types
+export interface CheckOutConfirmRespondData {
+  is_confirm: boolean;
+}
+
+export interface CheckOutConfirmResponsePayload {
+  time_stamp: number;
+  message_id: string;
+  respond_data: CheckOutConfirmRespondData;
+}
+
+// Driver Check-out Types
+export interface CheckOutLocation {
+  gps_timestamp: number;
+  latitude: number;
+  longitude: number;
+  accuracy: number;
+}
+
+export interface CheckOutData {
+  driver_information: {
+    driver_name: string;
+    driver_license_number: string;
+  };
+  working_duration: number;
+  check_out_timestamp: number;
+  CheckOutLocation: CheckOutLocation;
+}
+
+export interface DriverCheckOutPayload {
+  time_stamp: number;
+  message_id: string;
+  check_out_data: CheckOutData;
 }

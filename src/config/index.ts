@@ -10,6 +10,10 @@ export const config = {
     topics: {
       gpsData: process.env.MQTT_TOPIC_GPS || 'fms/+/operation_monitoring/gps_data',
       driverRequest: process.env.MQTT_TOPIC_DRIVER_REQUEST || 'fms/+/driving_session/driver_request',
+      driverCheckIn: process.env.MQTT_TOPIC_DRIVER_CHECKIN || 'fms/+/driving_session/driver_checkin',
+      checkoutConfirmRequest: process.env.MQTT_TOPIC_CHECKOUT_CONFIRM_REQUEST || 'fms/+/driving_session/driver_checkout_confirm_request',
+      checkoutConfirmResponse: process.env.MQTT_TOPIC_CHECKOUT_CONFIRM_RESPONSE || 'fms/+/driving_session/driver_checkout_confirm_response',
+      driverCheckOut: process.env.MQTT_TOPIC_DRIVER_CHECKOUT || 'fms/+/driving_session/driver_checkout',
     },
     clientId: `mqtt_service_${Math.random().toString(16).slice(3)}`,
   },
@@ -32,5 +36,8 @@ export const config = {
   },
   log: {
     level: process.env.LOG_LEVEL || 'info',
+  },
+  api: {
+    baseUrl: process.env.API_BASE_URL || 'http://103.216.116.186:8088',
   },
 };
