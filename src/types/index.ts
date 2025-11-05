@@ -85,9 +85,7 @@ export interface DriverInformation {
 export interface DriverInfoPayload {
   time_stamp: number;
   message_id: string;
-  driver_information: {
-    driver_information: DriverInformation;
-  };
+  driver_information:  DriverInformation;
 }
 
 // Driver Check-in Types

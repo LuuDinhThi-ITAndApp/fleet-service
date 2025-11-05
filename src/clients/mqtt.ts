@@ -266,10 +266,8 @@ class MQTTService {
         time_stamp: Math.floor(Date.now() / 1000),
         message_id: payload.message_id,
         driver_information: {
-          driver_information: {
             driver_name: `${driverData.firstName} ${driverData.lastName}`,
             driver_license_number: driverData.licenseNumber,
-          },
         },
       };
 
