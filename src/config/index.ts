@@ -38,6 +38,6 @@ export const config = {
     level: process.env.LOG_LEVEL || 'info',
   },
   api: {
-    baseUrl: process.env.API_BASE_URL || 'http://103.216.116.186:8088',
+    baseUrl: process.env.API_BASE_URL || 'http://103.216.116.186:8086',
   },
 };

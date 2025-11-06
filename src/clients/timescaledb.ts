@@ -220,7 +220,10 @@ class TimescaleDBClient {
 
       const params = payload.gps_data.flatMap((gpsPoint) => [
         deviceId,
-        new Date(payload.time_stamp * 1000), // Convert Unix timestamp (seconds) to Date
+        // Check if timestamp is in seconds (10 digits) or milliseconds (13 digits)
+        new Date(payload.time_stamp.toString().length === 10
+          ? payload.time_stamp * 1000  // seconds -> milliseconds
+          : payload.time_stamp),        // already milliseconds
         gpsPoint.latitude,
         gpsPoint.longitude,
         gpsPoint.speed,
