@@ -1,12 +1,13 @@
 import mqtt, { MqttClient } from 'mqtt';
 import { config } from '../config';
 import { logger } from '../utils/logger';
-import { EdgeEvent, GPSDataPayload, GPSDataPoint, DriverRequestPayload, DriverInfoPayload, DriverCheckInPayload, CheckOutConfirmRequestPayload, CheckOutConfirmResponsePayload, DriverCheckOutPayload } from '../types';
+import { EdgeEvent, GPSDataPayload, GPSDataPoint, DriverRequestPayload, DriverInfoPayload, DriverCheckInPayload, CheckOutConfirmRequestPayload, CheckOutConfirmResponsePayload, DriverCheckOutPayload, ParkingStateEvent } from '../types';
 import { redisClient } from './redis';
 import { timescaleDB } from './timescaledb';
 import { socketIOServer } from '../server/socketio';
 import { driverService } from '../services/driverService';
 import { tripService } from '../services/tripService';
+import { CacheKeys, VehicleState } from '../utils/constants';
 
 class MQTTService {
   private client: MqttClient | null = null;
@@ -110,6 +111,9 @@ class MQTTService {
       else if (topic.includes('driving_session/driver_checkout')) {
         await this.handleDriverCheckOut(deviceId, message as DriverCheckOutPayload);
       }
+      else if (topic.includes('driving_session/parking_state')) {
+        await this.handleParkingState(deviceId, message as ParkingStateEvent);
+      }
       else {
         // Handle generic event
         const event: EdgeEvent = {
@@ -163,7 +167,7 @@ class MQTTService {
     try {
       // Get the latest GPS data point (last item in the array)
       const latestGPSPoint = payload.gps_data[payload.gps_data.length - 1];
-      
+
       if (latestGPSPoint) {
         const cacheData = {
           time_stamp: payload.time_stamp,
@@ -184,7 +188,7 @@ class MQTTService {
     try {
       // Get the latest GPS data point (last item in the array)
       const latestGPSPoint = payload.gps_data[payload.gps_data.length - 1];
-      
+
       if (latestGPSPoint) {
         const streamData = {
           device_id: deviceId,
@@ -266,8 +270,8 @@ class MQTTService {
         time_stamp: Math.floor(Date.now() / 1000),
         message_id: payload.message_id,
         driver_information: {
-            driver_name: `${driverData.firstName} ${driverData.lastName}`,
-            driver_license_number: driverData.licenseNumber,
+          driver_name: `${driverData.firstName} ${driverData.lastName}`,
+          driver_license_number: driverData.licenseNumber,
         },
       };
 
@@ -401,7 +405,7 @@ class MQTTService {
         tripNumber: tripNumber,
         startTime: startTime,
         startAddress: startAddress,
-        status: 'Working',
+        status: VehicleState.MOVING,
         notes: `Driver: ${checkInData.driver_information.driver_name}, License: ${checkInData.driver_information.driver_license_number}`,
       };
 
@@ -419,6 +423,16 @@ class MQTTService {
           driver_name: checkInData.driver_information.driver_name,
           start_time: trip.startTime,
           status: trip.status,
+        });
+        await redisClient.cacheDeviceState(deviceId, {
+          device_id: deviceId,
+          timestamp: new Date(),
+          event_type: CacheKeys.VEHICLE_STATE,
+          data: {
+            trip_id: trip.id,
+            trip_number: trip.tripNumber,
+            status: VehicleState.MOVING,
+          },
         });
 
         // Cache trip info in Redis
@@ -678,6 +692,73 @@ class MQTTService {
   }
 
   /**
+   * Handle parking state messages
+   */
+  private async handleParkingState(deviceId: string, payload: ParkingStateEvent): Promise<void> {
+    try {
+      logger.info(`Received parking state from device: ${deviceId}`);
+      logger.info(`Parking ID: ${payload.parking_id}, State: ${payload.parking_state}, Duration: ${payload.parking_duration} minutes`);
+
+      // TODO: Map deviceId to vehicleId (UUID from API)
+      const vehicleId = "770e8400-e29b-41d4-a716-446655440002";
+
+      // get latest trip
+      const latestTrip = await tripService.getLatestTrip(vehicleId);
+
+      if (!latestTrip) {
+        logger.info(`No active trip found for vehicle ${vehicleId}. Cannot update with parking state.`);
+        return;
+      }
+
+      // Cache parking state in Redis
+      if (payload.parking_state === 0) {
+        await redisClient.cacheDeviceState(deviceId, {
+          device_id: deviceId,
+          timestamp: new Date(),
+          event_type: CacheKeys.VEHICLE_STATE,
+          data: {
+            trip_id: latestTrip.id,
+            trip_number: latestTrip.tripNumber,
+            status: VehicleState.IDLE,
+          },
+        });
+        // update trip status to IDLE
+        await tripService.updateTrip(latestTrip.id, {
+          status: VehicleState.IDLE,
+          continuousDrivingDurationSeconds: 0, // TODO : get from payload or calculate from latestTrip
+        });
+      } else {
+        await redisClient.cacheDeviceState(deviceId, {
+          device_id: deviceId,
+          timestamp: new Date(),
+          event_type: CacheKeys.VEHICLE_STATE,
+          data: {
+            trip_id: latestTrip.id,
+            trip_number: latestTrip.tripNumber,
+            status: VehicleState.MOVING,
+          },
+        });
+        // update trip status to IDLE
+        await tripService.updateTrip(latestTrip.id, { 
+          status: VehicleState.MOVING,
+         });
+      }
+
+      // Stream to Socket.IO for real-time monitoring
+      socketIOServer.emit('parking:state', {
+        device_id: deviceId,
+        parking_id: payload.parking_id,
+        parking_state: payload.parking_state,
+        parking_duration: payload.parking_duration,
+        message_id: payload.message_id,
+        time_stamp: payload.time_stamp,
+      });
+    } catch (error) {
+      logger.error('Error handling parking state:', error);
+    }
+  }
+
+  /**
    * Cache event in Redis
    */
   private async cacheEvent(event: EdgeEvent): Promise<void> {
@@ -698,7 +779,7 @@ class MQTTService {
     try {
       // Broadcast to all connected clients
       socketIOServer.emit('edge:event', event);
-      
+
       // Emit to room for specific device
       socketIOServer.to(`device:${event.device_id}`).emit('edge:device:event', event);
     } catch (error) {

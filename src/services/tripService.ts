@@ -15,6 +15,8 @@ interface CreateTripRequest {
   distanceKm?: number;
   durationMinutes?: number;
   idleTimeMinutes?: number;
+  durationSeconds?: number;
+  idleTimeSeconds?: number;
   avgSpeedKmh?: number;
   maxSpeedKmh?: number;
   fuelConsumedLiters?: number;
@@ -28,6 +30,7 @@ interface CreateTripRequest {
   criticalAlerts?: number;
   status?: string;
   notes?: string;
+  continuousDrivingDurationSeconds?: number;
 }
 
 interface TripResponse {
@@ -193,6 +196,30 @@ class TripService {
       }
 
       logger.error('Error updating trip with check-out:', error.message);
+      throw error;
+    }
+  }
+
+  async updateTrip(tripId: string, updateData: Partial<CreateTripRequest>): Promise<TripResponse['data'] | null> {
+    try {
+      logger.info(`Updating trip ${tripId} with data:`, updateData);
+
+      const response = await this.client.put<TripResponse>(`/api/trips/${tripId}`, updateData);
+
+      if (response.data && response.data.data) {
+        logger.info(`Trip ${tripId} updated successfully`);
+        return response.data.data;
+      }
+
+      return null;
+    } catch (error: any) {
+      if (error.response?.status === 400 || error.response?.status === 404) {
+        const errorData: ErrorResponse = error.response.data;
+        logger.error(`Failed to update trip: ${errorData.description}`);
+        throw new Error(errorData.description);
+      }
+
+      logger.error('Error updating trip:', error.message);
       throw error;
     }
   }

@@ -157,3 +157,12 @@ export interface DriverCheckOutPayload {
   message_id: string;
   check_out_data: CheckOutData;
 }
+
+
+export interface ParkingStateEvent {
+  time_stamp: number;
+  message_id: string;
+  parking_id: string;
+  parking_duration: number;
+  parking_state: number; // 0 = parked, 1 = unparked
+}
