@@ -70,6 +70,7 @@ interface Driver {
 interface EventLogRequest {
   id?: string;
   eventId: string;
+  sessionId?: string;
   eventType: string;
   eventSubType?: string;
   vehicle?: Vehicle;
@@ -138,11 +139,13 @@ class EventLogService {
       checkInTimestamp: string;
       location: { latitude: number; longitude: number; accuracy: number };
       address?: string;
-    }
+    },
+    tripId?: string
   ): Promise<EventLogResponse['data'] | null> {
     try {
       const eventLog: EventLogRequest = {
         eventId: eventId,
+        sessionId: tripId,
         eventType: 'DRIVER_CHECKIN',
         eventSubType: 'CHECK_IN',
         vehicle: {
@@ -169,6 +172,7 @@ class EventLogService {
         severity: Severity.INFOR,
         tags: ['driver', 'check-in', 'session-start'],
         eventTimestamp: checkInData.checkInTimestamp,
+        correlationId: tripId,
         metadata: {
           notes: `Driver ${driverInfo.name} checked in`,
         },
@@ -202,11 +206,13 @@ class EventLogService {
       workingDuration: number;
       location: { latitude: number; longitude: number; accuracy: number };
       address?: string;
-    }
+    },
+    tripId?: string
   ): Promise<EventLogResponse['data'] | null> {
     try {
       const eventLog: EventLogRequest = {
         eventId: eventId,
+        sessionId: tripId,
         eventType: 'DRIVER_CHECKOUT',
         eventSubType: 'CHECK_OUT',
         vehicle: {
@@ -233,6 +239,7 @@ class EventLogService {
         severity: Severity.INFOR,
         tags: ['driver', 'check-out', 'session-end'],
         eventTimestamp: checkOutData.checkOutTimestamp,
+        correlationId: tripId,
         metadata: {
           notes: `Driver ${driverInfo.name} checked out after ${checkOutData.workingDuration} minutes`,
         },
@@ -276,6 +283,7 @@ class EventLogService {
 
       const eventLog: EventLogRequest = {
         eventId: eventId,
+        sessionId: tripId,
         eventType: 'PARKING_STATE_CHANGE',
         eventSubType: isParked ? 'PARKING_START' : 'PARKING_END',
         vehicle: {

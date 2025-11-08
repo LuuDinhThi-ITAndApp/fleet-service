@@ -370,7 +370,18 @@ class MQTTService {
       });
 
       // Create new trip with status "Working"
-      await this.createTripForCheckIn(deviceId, checkInData);
+      let tripId = await this.createTripForCheckIn(deviceId, checkInData);
+
+      // If trip creation failed, try to get existing active trip
+      if (!tripId) {
+        logger.info(`Trip creation failed, attempting to get existing active trip for ${deviceId}`);
+        const vehicleId = "770e8400-e29b-41d4-a716-446655440002"; // TODO: Map deviceId to vehicleId
+        const existingTrip = await tripService.getLatestTrip(vehicleId);
+        if (existingTrip && !existingTrip.endTime) {
+          tripId = existingTrip.id;
+          logger.info(`Using existing active trip: ${tripId}`);
+        }
+      }
 
       // Log check-in event
       await eventLogService.logCheckInEvent(
@@ -388,7 +399,8 @@ class MQTTService {
             accuracy: location.accuracy,
           },
           address: `Lat: ${location.latitude.toFixed(6)}, Lon: ${location.longitude.toFixed(6)}`,
-        }
+        },
+        tripId
       );
 
       logger.info(`Driver check-in processed successfully for ${deviceId}`);
@@ -400,8 +412,9 @@ class MQTTService {
 
   /**
    * Create a new trip when driver checks in
+   * @returns tripId if trip was created successfully, undefined otherwise
    */
-  private async createTripForCheckIn(deviceId: string, checkInData: any): Promise<void> {
+  private async createTripForCheckIn(deviceId: string, checkInData: any): Promise<string | undefined> {
     try {
       logger.info(`Creating trip for device: ${deviceId}`);
 
@@ -460,7 +473,11 @@ class MQTTService {
             status: VehicleState.MOVING,
           },
         });
+
+        return trip.id;
       }
+
+      return undefined;
 
     } catch (error: any) {
       logger.error('Error creating trip for check-in:', error.message);
@@ -472,6 +489,8 @@ class MQTTService {
         // For other errors, still continue processing (don't block check-in)
         logger.error('Failed to create trip, but check-in was recorded successfully');
       }
+
+      return undefined;
     }
   }
 
@@ -613,7 +632,7 @@ class MQTTService {
       });
 
       // Update latest trip with check-out data
-      await this.updateTripWithCheckOut(deviceId, checkOutData);
+      const tripId = await this.updateTripWithCheckOut(deviceId, checkOutData);
 
       // Log check-out event
       await eventLogService.logCheckOutEvent(
@@ -632,7 +651,8 @@ class MQTTService {
             accuracy: location.accuracy,
           },
           address: `Lat: ${location.latitude.toFixed(6)}, Lon: ${location.longitude.toFixed(6)}`,
-        }
+        },
+        tripId
       );
 
       logger.info(`Driver check-out processed successfully for ${deviceId}`);
@@ -644,8 +664,9 @@ class MQTTService {
 
   /**
    * Update the latest trip with check-out data
+   * @returns tripId if trip was updated successfully, undefined otherwise
    */
-  private async updateTripWithCheckOut(deviceId: string, checkOutData: any): Promise<void> {
+  private async updateTripWithCheckOut(deviceId: string, checkOutData: any): Promise<string | undefined> {
     try {
       logger.info(`Updating trip for device: ${deviceId} with check-out data`);
 
@@ -657,12 +678,12 @@ class MQTTService {
 
       if (!latestTrip) {
         logger.warn(`No trip found for vehicle ${deviceId}. Cannot update with check-out data.`);
-        return;
+        return undefined;
       }
 
       if (latestTrip.endTime) {
         logger.warn(`Latest trip ${latestTrip.id} already has end time. Cannot update with check-out data.`);
-        return;
+        return latestTrip.id;
       }
 
       // Convert Unix milliseconds to UTC+7
@@ -697,13 +718,18 @@ class MQTTService {
           duration_minutes: checkOutData.working_duration,
           status: updatedTrip.status,
         });
+
+        return updatedTrip.id;
       }
+
+      return latestTrip.id;
 
     } catch (error: any) {
       logger.error('Error updating trip with check-out:', {
         message: error.message,
         stack: error.stack,
       });
+      return undefined;
     }
   }
 
