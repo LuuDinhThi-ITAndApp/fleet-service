@@ -15,6 +15,7 @@ export const config = {
       checkoutConfirmResponse: process.env.MQTT_TOPIC_CHECKOUT_CONFIRM_RESPONSE || 'fms/+/driving_session/driver_checkout_confirm_response',
       driverCheckOut: process.env.MQTT_TOPIC_DRIVER_CHECKOUT || 'fms/+/driving_session/driver_checkout',
       parkingState: process.env.MQTT_TOPIC_PARKING_STATE || 'fms/+/driving_session/parking_state',
+      drivingTime: process.env.MQTT_TOPIC_DRIVING_TIME || 'fms/+/driving_session/continuous_driving_time',
     },
     clientId: `mqtt_service_${Math.random().toString(16).slice(3)}`,
   },

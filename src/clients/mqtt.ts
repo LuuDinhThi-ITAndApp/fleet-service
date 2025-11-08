@@ -1,7 +1,7 @@
 import mqtt, { MqttClient } from 'mqtt';
 import { config } from '../config';
 import { logger } from '../utils/logger';
-import { EdgeEvent, GPSDataPayload, GPSDataPoint, DriverRequestPayload, DriverInfoPayload, DriverCheckInPayload, CheckOutConfirmRequestPayload, CheckOutConfirmResponsePayload, DriverCheckOutPayload, ParkingStateEvent } from '../types';
+import { EdgeEvent, GPSDataPayload, GPSDataPoint, DriverRequestPayload, DriverInfoPayload, DriverCheckInPayload, CheckOutConfirmRequestPayload, CheckOutConfirmResponsePayload, DriverCheckOutPayload, ParkingStateEvent, DrivingTimeEvent } from '../types';
 import { redisClient } from './redis';
 import { timescaleDB } from './timescaledb';
 import { socketIOServer } from '../server/socketio';
@@ -68,6 +68,7 @@ class MQTTService {
       config.mqtt.topics.checkoutConfirmRequest,
       config.mqtt.topics.driverCheckOut,
       config.mqtt.topics.parkingState,
+      config.mqtt.topics.drivingTime,
     ];
 
     topics.forEach(topic => {
@@ -115,6 +116,10 @@ class MQTTService {
       }
       else if (topic.includes('driving_session/parking_state')) {
         await this.handleParkingState(deviceId, message as ParkingStateEvent);
+      }
+      // Check if this is a continuous driving time message
+      else if (topic.includes('driving_session/continuous_driving_time')) {
+        await this.handleContinuousDrivingTime(deviceId, message as DrivingTimeEvent);
       }
       else {
         // Handle generic event
@@ -785,6 +790,58 @@ class MQTTService {
 
     } catch (error) {
       logger.error('Error handling parking state:', error);
+    }
+  }
+
+  /**
+   * Handle continuous driving time messages
+   */
+  private async handleContinuousDrivingTime(deviceId: string, payload: DrivingTimeEvent): Promise<void> {
+    try {
+      logger.info(`Received continuous driving time from device: ${deviceId}`);
+      logger.info(`Continuous driving time: ${payload.continuous_driving_time} seconds, Total driving duration: ${payload.driving_duration} seconds`);
+
+      // TODO: Map deviceId to vehicleId (UUID from API)
+      const vehicleId = "770e8400-e29b-41d4-a716-446655440002";
+
+      // Get latest trip
+      const latestTrip = await tripService.getLatestTrip(vehicleId);
+
+      if (!latestTrip) {
+        logger.info(`No active trip found for vehicle ${vehicleId}. Cannot update with continuous driving time.`);
+        return;
+      }
+
+      // Update trip with continuous driving time
+      await tripService.updateTrip(latestTrip.id, {
+        startTime: latestTrip.startTime, // Required by API
+        continuousDrivingDurationSeconds: payload.continuous_driving_time,
+      });
+
+      logger.info(`Trip ${latestTrip.id} updated with continuous driving time: ${payload.continuous_driving_time}s`);
+
+      // Stream to Socket.IO for real-time monitoring
+      socketIOServer.emit('driving:time', {
+        device_id: deviceId,
+        continuous_driving_time: payload.continuous_driving_time,
+        driving_duration: payload.driving_duration,
+        message_id: payload.message_id,
+        time_stamp: payload.time_stamp,
+        trip_id: latestTrip.id,
+        trip_number: latestTrip.tripNumber,
+      });
+
+      // Emit to specific device room
+      socketIOServer.to(`device:${deviceId}`).emit('device:driving:time', {
+        device_id: deviceId,
+        ...payload,
+        trip_id: latestTrip.id,
+      });
+
+      logger.info(`Continuous driving time processed successfully for ${deviceId}`);
+
+    } catch (error) {
+      logger.error('Error handling continuous driving time:', error);
     }
   }
 

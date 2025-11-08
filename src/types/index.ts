@@ -166,3 +166,10 @@ export interface ParkingStateEvent {
   parking_duration: number;
   parking_status: number; // 0 = parked, 1 = unparked
 }
+
+export interface DrivingTimeEvent {
+  time_stamp: number;
+  message_id: string;
+  continuous_driving_time: number; // Unit: seconds
+  driving_duration: number; // Total driving time in a day. Unit: seconds
+}
