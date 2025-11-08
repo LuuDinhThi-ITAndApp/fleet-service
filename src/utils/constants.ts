@@ -18,3 +18,8 @@ export enum CacheKeys {
     CHECKOUT_CONFIR_REQUEST = 'checkout_confirm_request',
 
 }
+export enum Severity {
+    INFOR ='Info',
+    WARNING ='Warning',
+    Alert ='Alert',
+}

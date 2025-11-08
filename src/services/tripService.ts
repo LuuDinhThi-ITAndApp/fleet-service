@@ -164,7 +164,8 @@ class TripService {
   async updateTripCheckOut(
     tripId: string,
     checkOutData: {
-      endTime: string; // ISO 8601 format
+      startTime: string; 
+      endTime: string; 
       endAddress: string;
       durationMinutes: number;
       status?: string;
@@ -189,10 +190,13 @@ class TripService {
 
       return null;
     } catch (error: any) {
-      if (error.response?.status === 400 || error.response?.status === 404) {
+      if (error.response) {
         const errorData: ErrorResponse = error.response.data;
-        logger.error(`Failed to update trip: ${errorData.description}`);
-        throw new Error(errorData.description);
+        logger.error(`Failed to update trip [${error.response.status}]: ${errorData?.description || 'Unknown error'}`, {
+          status: error.response.status,
+          data: error.response.data,
+        });
+        throw new Error(errorData?.description || `HTTP ${error.response.status} error`);
       }
 
       logger.error('Error updating trip with check-out:', error.message);
@@ -213,10 +217,13 @@ class TripService {
 
       return null;
     } catch (error: any) {
-      if (error.response?.status === 400 || error.response?.status === 404) {
+      if (error.response) {
         const errorData: ErrorResponse = error.response.data;
-        logger.error(`Failed to update trip: ${errorData.description}`);
-        throw new Error(errorData.description);
+        logger.error(`Failed to update trip [${error.response.status}]: ${errorData?.description || 'Unknown error'}`, {
+          status: error.response.status,
+          data: error.response.data,
+        });
+        throw new Error(errorData?.description || `HTTP ${error.response.status} error`);
       }
 
       logger.error('Error updating trip:', error.message);

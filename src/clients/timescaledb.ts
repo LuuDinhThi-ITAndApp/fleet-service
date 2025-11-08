@@ -218,17 +218,20 @@ class TimescaleDBClient {
         return `($${offset + 1}, $${offset + 2}, $${offset + 3}, $${offset + 4}, $${offset + 5}, $${offset + 6})`;
       }).join(',');
 
-      const params = payload.gps_data.flatMap((gpsPoint) => [
-        deviceId,
-        // Check if timestamp is in seconds (10 digits) or milliseconds (13 digits)
-        new Date(payload.time_stamp.toString().length === 10
-          ? payload.time_stamp * 1000  // seconds -> milliseconds
-          : payload.time_stamp),        // already milliseconds
-        gpsPoint.latitude,
-        gpsPoint.longitude,
-        gpsPoint.speed,
-        gpsPoint.accuracy,
-      ]);
+      const params = payload.gps_data.flatMap((gpsPoint) => {
+        // Convert Unix milliseconds to UTC+7
+        const utc7Ms = payload.time_stamp + (7 * 60 * 60 * 1000);
+        const utc7Date = new Date(utc7Ms);
+
+        return [
+          deviceId,
+          utc7Date,  // Store with Vietnam timezone (+7)
+          gpsPoint.latitude,
+          gpsPoint.longitude,
+          gpsPoint.speed,
+          gpsPoint.accuracy,
+        ];
+      });
 
       await client.query(
         `INSERT INTO vehicle_telemetry

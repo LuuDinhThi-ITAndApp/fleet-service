@@ -7,6 +7,7 @@ import { timescaleDB } from './timescaledb';
 import { socketIOServer } from '../server/socketio';
 import { driverService } from '../services/driverService';
 import { tripService } from '../services/tripService';
+import { eventLogService } from '../services/eventLogService';
 import { CacheKeys, VehicleState } from '../utils/constants';
 
 class MQTTService {
@@ -66,6 +67,7 @@ class MQTTService {
       config.mqtt.topics.driverCheckIn,
       config.mqtt.topics.checkoutConfirmRequest,
       config.mqtt.topics.driverCheckOut,
+      config.mqtt.topics.parkingState,
     ];
 
     topics.forEach(topic => {
@@ -266,8 +268,11 @@ class MQTTService {
       }
 
       // Build driver info payload
+      // Convert to UTC+7 milliseconds
+      const utc7Ms = Date.now() + (7 * 60 * 60 * 1000);
+
       const driverInfo: DriverInfoPayload = {
-        time_stamp: Math.floor(Date.now() / 1000),
+        time_stamp: utc7Ms,
         message_id: payload.message_id,
         driver_information: {
           driver_name: `${driverData.firstName} ${driverData.lastName}`,
@@ -331,16 +336,11 @@ class MQTTService {
       const location = checkInData.CheckInLocation;
 
       logger.info(`Driver: ${driverInfo.driver_name} (${driverInfo.driver_license_number})`);
-      logger.info(`Check-in time: ${new Date(checkInData.check_in_timestamp * 1000).toISOString()}`);
-      logger.info(`Location: ${location.latitude}, ${location.longitude}`);
 
-      // Cache check-in data in Redis
-      await redisClient.cacheDeviceState(deviceId, {
-        device_id: deviceId,
-        timestamp: new Date(payload.time_stamp * 1000),
-        event_type: 'driver_checkin',
-        data: checkInData,
-      });
+      // Convert Unix milliseconds to UTC+7
+      const checkInTimestampMs = checkInData.check_in_timestamp + (7 * 60 * 60 * 1000);
+      logger.info(`Check-in time: ${new Date(checkInTimestampMs).toISOString()}`);
+      logger.info(`Location: ${location.latitude}, ${location.longitude}`);
 
       // Stream to Socket.IO for real-time monitoring
       socketIOServer.emit('driver:checkin', {
@@ -367,7 +367,26 @@ class MQTTService {
       // Create new trip with status "Working"
       await this.createTripForCheckIn(deviceId, checkInData);
 
-      logger.info(`✅ Driver check-in processed successfully for ${deviceId}`);
+      // Log check-in event
+      await eventLogService.logCheckInEvent(
+        payload.message_id,
+        "770e8400-e29b-41d4-a716-446655440002", // TODO: Map deviceId to vehicleId
+        {
+          name: driverInfo.driver_name,
+          licenseNumber: driverInfo.driver_license_number,
+        },
+        {
+          checkInTimestamp: new Date(checkInTimestampMs).toISOString(),
+          location: {
+            latitude: location.latitude,
+            longitude: location.longitude,
+            accuracy: location.accuracy,
+          },
+          address: `Lat: ${location.latitude.toFixed(6)}, Lon: ${location.longitude.toFixed(6)}`,
+        }
+      );
+
+      logger.info(`Driver check-in processed successfully for ${deviceId}`);
 
     } catch (error) {
       logger.error('Error handling driver check-in:', error);
@@ -389,8 +408,9 @@ class MQTTService {
       // For now, use hardcoded UUID
       const driverId = '880e8400-e29b-41d4-a716-446655440001';
 
-      // Convert check-in timestamp to ISO 8601 with timezone
-      const startTime = new Date(checkInData.check_in_timestamp * 1000).toISOString();
+      // Convert Unix milliseconds to UTC+7
+      const startTimeMs = checkInData.check_in_timestamp + (7 * 60 * 60 * 1000);
+      const startTime = new Date(startTimeMs).toISOString();
 
       // Generate trip number
       const tripNumber = tripService.generateTripNumber(deviceId);
@@ -413,7 +433,7 @@ class MQTTService {
       const trip = await tripService.createTrip(tripRequest);
 
       if (trip) {
-        logger.info(`✅ Trip created successfully: ${trip.id}`);
+        logger.info(`Trip created successfully: ${trip.id}`);
 
         // Emit trip creation event via Socket.IO
         socketIOServer.emit('trip:created', {
@@ -424,6 +444,7 @@ class MQTTService {
           start_time: trip.startTime,
           status: trip.status,
         });
+        // Cache vehicle state with trip info
         await redisClient.cacheDeviceState(deviceId, {
           device_id: deviceId,
           timestamp: new Date(),
@@ -432,18 +453,6 @@ class MQTTService {
             trip_id: trip.id,
             trip_number: trip.tripNumber,
             status: VehicleState.MOVING,
-          },
-        });
-
-        // Cache trip info in Redis
-        await redisClient.cacheDeviceState(deviceId, {
-          device_id: deviceId,
-          timestamp: new Date(),
-          event_type: 'trip_created',
-          data: {
-            trip_id: trip.id,
-            trip_number: trip.tripNumber,
-            status: trip.status,
           },
         });
       }
@@ -477,14 +486,6 @@ class MQTTService {
         await this.publishCheckOutConfirmResponse(deviceId, payload.message_id, false);
         return;
       }
-
-      // Cache request in Redis
-      await redisClient.cacheDeviceState(deviceId, {
-        device_id: deviceId,
-        timestamp: new Date(payload.time_stamp * 1000),
-        event_type: 'checkout_confirm_request',
-        data: requestData,
-      });
 
       // Get latest trip for vehicle
       // TODO: Map deviceId to vehicleId (UUID from API)
@@ -534,8 +535,11 @@ class MQTTService {
 
       const responseTopic = config.mqtt.topics.checkoutConfirmResponse.replace('+', deviceId);
 
+      // Convert to UTC+7 milliseconds
+      const utc7Ms = Date.now() + (7 * 60 * 60 * 1000);
+
       const responsePayload: CheckOutConfirmResponsePayload = {
-        time_stamp: Math.floor(Date.now() / 1000),
+        time_stamp: utc7Ms,
         message_id: requestMessageId,
         respond_data: {
           is_confirm: isConfirm,
@@ -550,7 +554,7 @@ class MQTTService {
           if (err) {
             logger.error(`Error publishing check-out confirm response to ${responseTopic}:`, err);
           } else {
-            logger.info(`✅ Check-out confirm response sent to ${deviceId}: is_confirm=${isConfirm}`);
+            logger.info(`Check-out confirm response sent to ${deviceId}: is_confirm=${isConfirm}`);
           }
         }
       );
@@ -573,17 +577,12 @@ class MQTTService {
       const location = checkOutData.CheckOutLocation;
 
       logger.info(`Driver: ${driverInfo.driver_name} (${driverInfo.driver_license_number})`);
-      logger.info(`Check-out time: ${new Date(checkOutData.check_out_timestamp * 1000).toISOString()}`);
+
+      // Convert Unix milliseconds to UTC+7
+      const checkOutTimestampMs = checkOutData.check_out_timestamp + (7 * 60 * 60 * 1000);
+      logger.info(`Check-out time: ${new Date(checkOutTimestampMs).toISOString()}`);
       logger.info(`Working duration: ${checkOutData.working_duration} minutes`);
       logger.info(`Location: ${location.latitude}, ${location.longitude}`);
-
-      // Cache check-out data in Redis
-      await redisClient.cacheDeviceState(deviceId, {
-        device_id: "770e8400-e29b-41d4-a716-446655440002",
-        timestamp: new Date(payload.time_stamp * 1000),
-        event_type: 'driver_checkout',
-        data: checkOutData,
-      });
 
       // Stream to Socket.IO for real-time monitoring
       socketIOServer.emit('driver:checkout', {
@@ -611,7 +610,27 @@ class MQTTService {
       // Update latest trip with check-out data
       await this.updateTripWithCheckOut(deviceId, checkOutData);
 
-      logger.info(`✅ Driver check-out processed successfully for ${deviceId}`);
+      // Log check-out event
+      await eventLogService.logCheckOutEvent(
+        payload.message_id,
+        "770e8400-e29b-41d4-a716-446655440002", // TODO: Map deviceId to vehicleId
+        {
+          name: driverInfo.driver_name,
+          licenseNumber: driverInfo.driver_license_number,
+        },
+        {
+          checkOutTimestamp: new Date(checkOutTimestampMs).toISOString(),
+          workingDuration: checkOutData.working_duration,
+          location: {
+            latitude: location.latitude,
+            longitude: location.longitude,
+            accuracy: location.accuracy,
+          },
+          address: `Lat: ${location.latitude.toFixed(6)}, Lon: ${location.longitude.toFixed(6)}`,
+        }
+      );
+
+      logger.info(`Driver check-out processed successfully for ${deviceId}`);
 
     } catch (error) {
       logger.error('Error handling driver check-out:', error);
@@ -641,24 +660,26 @@ class MQTTService {
         return;
       }
 
-      // Convert check-out timestamp to ISO 8601 with timezone
-      const endTime = new Date(checkOutData.check_out_timestamp * 1000).toISOString();
+      // Convert Unix milliseconds to UTC+7
+      const endTimeMs = checkOutData.check_out_timestamp + (7 * 60 * 60 * 1000);
+      const endTime = new Date(endTimeMs).toISOString();
 
       // Format end address from location
       const endAddress = `Lat: ${checkOutData.CheckOutLocation.latitude.toFixed(6)}, Lon: ${checkOutData.CheckOutLocation.longitude.toFixed(6)}`;
 
       // Update trip with check-out data
-      // const updatedTrip = await tripService.updateTripCheckOut(latestTrip.id, {
-      //   endTime: endTime,
-      //   endAddress: endAddress,
-      //   durationMinutes: checkOutData.working_duration,
-      //   status: 'Completed',
-      //   notes: "note",
-      // });
-      const updatedTrip = await tripService.endDrivingSession(vehicleId);
+      const updatedTrip = await tripService.updateTripCheckOut(latestTrip.id, {
+        startTime: latestTrip.startTime, // Required by API
+        endTime: endTime,
+        endAddress: endAddress,
+        durationMinutes: checkOutData.working_duration,
+        status: 'Completed',
+        notes: "note",
+      });
+      // const updatedTrip = await tripService.endDrivingSession(vehicleId);
 
       if (updatedTrip) {
-        logger.info(`✅ Trip ${latestTrip.id} updated successfully with check-out data`);
+        logger.info(` Trip ${latestTrip.id} updated successfully with check-out data`);
 
         // Emit trip completion event via Socket.IO
         socketIOServer.emit('trip:completed', {
@@ -671,23 +692,13 @@ class MQTTService {
           duration_minutes: checkOutData.working_duration,
           status: updatedTrip.status,
         });
-
-        // Cache trip completion in Redis
-        await redisClient.cacheDeviceState(deviceId, {
-          device_id: deviceId,
-          timestamp: new Date(),
-          event_type: 'trip_completed',
-          data: {
-            trip_id: updatedTrip.id,
-            trip_number: updatedTrip.tripNumber,
-            status: updatedTrip.status,
-            duration_minutes: checkOutData.working_duration,
-          },
-        });
       }
 
     } catch (error: any) {
-      logger.error('Error updating trip with check-out:', error.message);
+      logger.error('Error updating trip with check-out:', {
+        message: error.message,
+        stack: error.stack,
+      });
     }
   }
 
@@ -697,7 +708,7 @@ class MQTTService {
   private async handleParkingState(deviceId: string, payload: ParkingStateEvent): Promise<void> {
     try {
       logger.info(`Received parking state from device: ${deviceId}`);
-      logger.info(`Parking ID: ${payload.parking_id}, State: ${payload.parking_state}, Duration: ${payload.parking_duration} minutes`);
+      logger.info(`Parking ID: ${payload.parking_id}, State: ${payload.parking_status === 0 ? 'PARKED' : 'MOVING'}, Duration: ${payload.parking_duration} seconds`);
 
       // TODO: Map deviceId to vehicleId (UUID from API)
       const vehicleId = "770e8400-e29b-41d4-a716-446655440002";
@@ -711,7 +722,7 @@ class MQTTService {
       }
 
       // Cache parking state in Redis
-      if (payload.parking_state === 0) {
+      if (payload.parking_status === 0) {
         await redisClient.cacheDeviceState(deviceId, {
           device_id: deviceId,
           timestamp: new Date(),
@@ -724,6 +735,7 @@ class MQTTService {
         });
         // update trip status to IDLE
         await tripService.updateTrip(latestTrip.id, {
+          startTime: latestTrip.startTime, // Required by API
           status: VehicleState.IDLE,
           continuousDrivingDurationSeconds: 0, // TODO : get from payload or calculate from latestTrip
         });
@@ -738,8 +750,9 @@ class MQTTService {
             status: VehicleState.MOVING,
           },
         });
-        // update trip status to IDLE
-        await tripService.updateTrip(latestTrip.id, { 
+        // update trip status to MOVING
+        await tripService.updateTrip(latestTrip.id, {
+          startTime: latestTrip.startTime, // Required by API
           status: VehicleState.MOVING,
          });
       }
@@ -748,11 +761,28 @@ class MQTTService {
       socketIOServer.emit('parking:state', {
         device_id: deviceId,
         parking_id: payload.parking_id,
-        parking_state: payload.parking_state,
+        parking_state: payload.parking_status,
         parking_duration: payload.parking_duration,
         message_id: payload.message_id,
         time_stamp: payload.time_stamp,
       });
+
+      // Log parking state event - Convert Unix milliseconds to UTC+7
+      const timestampMs = payload.time_stamp + (7 * 60 * 60 * 1000);
+      await eventLogService.logParkingStateEvent(
+        payload.message_id,
+        vehicleId, // Already defined at line 765
+        {
+          parkingId: payload.parking_id,
+          parkingState: payload.parking_status,
+          parkingDuration: payload.parking_duration,
+          timestamp: new Date(timestampMs).toISOString(),
+        },
+        latestTrip?.id
+      );
+
+      logger.info(` Parking state processed successfully for ${deviceId}`);
+
     } catch (error) {
       logger.error('Error handling parking state:', error);
     }

@@ -164,5 +164,5 @@ export interface ParkingStateEvent {
   message_id: string;
   parking_id: string;
   parking_duration: number;
-  parking_state: number; // 0 = parked, 1 = unparked
+  parking_status: number; // 0 = parked, 1 = unparked
 }
