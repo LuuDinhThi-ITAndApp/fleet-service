@@ -160,12 +160,13 @@ class TripService {
 
   /**
    * Update trip with check-out data (end time, duration, location)
+   * Fetches existing trip, merges with new data, then sends complete object
    */
   async updateTripCheckOut(
     tripId: string,
     checkOutData: {
-      startTime: string; 
-      endTime: string; 
+      startTime: string;
+      endTime: string;
       endAddress: string;
       durationMinutes: number;
       status?: string;
@@ -178,10 +179,30 @@ class TripService {
         durationMinutes: checkOutData.durationMinutes,
       });
 
-      const response = await this.client.put<TripResponse>(`/api/trips/${tripId}`, {
+      // Step 1: Fetch existing trip
+      const getResponse = await this.client.get<TripResponse>(`/api/trips/${tripId}`);
+
+      if (!getResponse.data || !getResponse.data.data) {
+        logger.error('Failed to fetch existing trip for update');
+        return null;
+      }
+
+      const existingTrip = getResponse.data.data;
+      logger.info('Existing trip fetched successfully:', {
+        id: existingTrip.id,
+        hasVehicleId: !!existingTrip.vehicleId,
+        hasDriverId: !!existingTrip.driverId,
+      });
+
+      // Step 2: Merge existing data with updates
+      const updatedTrip = {
+        ...existingTrip,
         ...checkOutData,
         status: checkOutData.status || 'Completed',
-      });
+      };
+
+      // Step 3: Send complete updated object
+      const response = await this.client.put<TripResponse>(`/api/trips/${tripId}`, updatedTrip);
 
       if (response.data && response.data.data) {
         logger.info(`Trip ${tripId} updated successfully with check-out data`);
@@ -204,11 +225,36 @@ class TripService {
     }
   }
 
+  /**
+   * Update trip with partial data
+   * Fetches existing trip, merges with new data, then sends complete object
+   */
   async updateTrip(tripId: string, updateData: Partial<CreateTripRequest>): Promise<TripResponse['data'] | null> {
     try {
       logger.info(`Updating trip ${tripId} with data:`, updateData);
 
-      const response = await this.client.put<TripResponse>(`/api/trips/${tripId}`, updateData);
+      // Step 1: Fetch existing trip
+      const getResponse = await this.client.get<TripResponse>(`/api/trips/${tripId}`);
+
+      if (!getResponse.data || !getResponse.data.data) {
+        logger.error('Failed to fetch existing trip for update');
+        return null;
+      }
+
+      const existingTrip = getResponse.data.data;
+      logger.info('Existing trip fetched successfully:', {
+        id: existingTrip.id,
+        status: existingTrip.status,
+      });
+
+      // Step 2: Merge existing data with updates
+      const updatedTrip = {
+        ...existingTrip,
+        ...updateData,
+      };
+
+      // Step 3: Send complete updated object
+      const response = await this.client.put<TripResponse>(`/api/trips/${tripId}`, updatedTrip);
 
       if (response.data && response.data.data) {
         logger.info(`Trip ${tripId} updated successfully`);

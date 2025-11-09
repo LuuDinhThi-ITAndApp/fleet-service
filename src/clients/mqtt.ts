@@ -371,6 +371,7 @@ class MQTTService {
 
       // Create new trip with status "Working"
       let tripId = await this.createTripForCheckIn(deviceId, checkInData);
+      logger.info(`🔍 DEBUG: After createTripForCheckIn, tripId = ${tripId}`);
 
       // If trip creation failed, try to get existing active trip
       if (!tripId) {
@@ -380,8 +381,12 @@ class MQTTService {
         if (existingTrip && !existingTrip.endTime) {
           tripId = existingTrip.id;
           logger.info(`Using existing active trip: ${tripId}`);
+        } else {
+          logger.warn(`⚠️ No active trip found! tripId will be undefined`);
         }
       }
+
+      logger.info(`🔍 DEBUG: Final tripId before logging event = ${tripId}`);
 
       // Log check-in event
       await eventLogService.logCheckInEvent(
@@ -752,8 +757,16 @@ class MQTTService {
         return;
       }
 
-      // Cache parking state in Redis
+      // Convert Unix milliseconds to UTC+7
+      const timestampMs = payload.time_stamp + (7 * 60 * 60 * 1000);
+      const timestamp = new Date(timestampMs).toISOString();
+
+      // Handle parking state
       if (payload.parking_status === 0) {
+        // Vehicle PARKED - Create new parking event
+        logger.info(`Vehicle ${deviceId} parked. Creating parking event.`);
+
+        // Cache vehicle state in Redis
         await redisClient.cacheDeviceState(deviceId, {
           device_id: deviceId,
           timestamp: new Date(),
@@ -764,13 +777,36 @@ class MQTTService {
             status: VehicleState.IDLE,
           },
         });
-        // update trip status to IDLE
+
+        // Update trip status to IDLE
         await tripService.updateTrip(latestTrip.id, {
           startTime: latestTrip.startTime, // Required by API
           status: VehicleState.IDLE,
-          continuousDrivingDurationSeconds: 0, // TODO : get from payload or calculate from latestTrip
+          continuousDrivingDurationSeconds: 0,
         });
+
+        // Create parking start event
+        const parkingEvent = await eventLogService.logParkingStartEvent(
+          payload.message_id,
+          vehicleId,
+          {
+            parkingId: payload.parking_id,
+            timestamp: timestamp,
+          },
+          latestTrip.id
+        );
+
+        // Cache the MongoDB event ID for later update
+        if (parkingEvent && parkingEvent.id) {
+          await redisClient.cacheParkingEventId(payload.parking_id, parkingEvent.id);
+          logger.info(`Cached parking event ID: ${parkingEvent.id} for parking ${payload.parking_id}`);
+        }
+
       } else {
+        // Vehicle MOVING - Update existing parking event
+        logger.info(`Vehicle ${deviceId} resumed movement. Updating parking event.`);
+
+        // Cache vehicle state in Redis
         await redisClient.cacheDeviceState(deviceId, {
           device_id: deviceId,
           timestamp: new Date(),
@@ -781,11 +817,32 @@ class MQTTService {
             status: VehicleState.MOVING,
           },
         });
-        // update trip status to MOVING
+
+        // Update trip status to MOVING
         await tripService.updateTrip(latestTrip.id, {
           startTime: latestTrip.startTime, // Required by API
           status: VehicleState.MOVING,
-         });
+        });
+
+        // Get the cached parking event MongoDB ID
+        const parkingEventId = await redisClient.getParkingEventId(payload.parking_id);
+
+        if (parkingEventId) {
+          // Update the parking event with end time and duration
+          await eventLogService.updateParkingEndEvent(
+            parkingEventId,
+            {
+              parkingDuration: payload.parking_duration,
+              endTime: timestamp,
+            }
+          );
+
+          // Delete the cached event ID
+          await redisClient.deleteParkingEventId(payload.parking_id);
+          logger.info(`Updated and cleaned up parking event: ${parkingEventId}`);
+        } else {
+          logger.warn(`No cached parking event ID found for parking ${payload.parking_id}. Cannot update event.`);
+        }
       }
 
       // Stream to Socket.IO for real-time monitoring
@@ -798,21 +855,7 @@ class MQTTService {
         time_stamp: payload.time_stamp,
       });
 
-      // Log parking state event - Convert Unix milliseconds to UTC+7
-      const timestampMs = payload.time_stamp + (7 * 60 * 60 * 1000);
-      await eventLogService.logParkingStateEvent(
-        payload.message_id,
-        vehicleId, // Already defined at line 765
-        {
-          parkingId: payload.parking_id,
-          parkingState: payload.parking_status,
-          parkingDuration: payload.parking_duration,
-          timestamp: new Date(timestampMs).toISOString(),
-        },
-        latestTrip?.id
-      );
-
-      logger.info(` Parking state processed successfully for ${deviceId}`);
+      logger.info(`Parking state processed successfully for ${deviceId}`);
 
     } catch (error) {
       logger.error('Error handling parking state:', error);
@@ -838,10 +881,11 @@ class MQTTService {
         return;
       }
 
-      // Update trip with continuous driving time
+      // Update trip with continuous driving time and total duration
       await tripService.updateTrip(latestTrip.id, {
         startTime: latestTrip.startTime, // Required by API
         continuousDrivingDurationSeconds: payload.continuous_driving_time,
+        durationSeconds: payload.driving_duration,
       });
 
       logger.info(`Trip ${latestTrip.id} updated with continuous driving time: ${payload.continuous_driving_time}s`);
