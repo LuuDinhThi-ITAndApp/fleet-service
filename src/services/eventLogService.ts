@@ -67,6 +67,12 @@ interface Driver {
   employeeId?: string;
 }
 
+interface ViolationOperation {
+  timeStamp: number;
+  messageId: string;
+  violationValue: number;
+}
+
 interface EventLogRequest {
   id?: string;
   eventId: string;
@@ -80,6 +86,7 @@ interface EventLogRequest {
   location?: Location;
   checkInOut?: CheckInOut;
   parking?: Parking;
+  violationOperation?: ViolationOperation;
   status: string;
   severity: string;
   tags?: string[];
@@ -423,6 +430,103 @@ class EventLogService {
     } catch (error: any) {
       logger.error('Error counting parking events:', error.message);
       return 0; // Return 0 on error
+    }
+  }
+
+  /**
+   * Count speed limit violations by session ID
+   * Uses the new API endpoint that filters by eventSubType
+   * @param sessionId - Trip/Session ID
+   * @returns Number of speed limit violation events in the session
+   */
+  async countSpeedViolationsBySession(sessionId: string): Promise<number> {
+    try {
+      const response = await this.client.get<number>(
+        '/api/event-logs/stats/count-by-session-and-subtype',
+        {
+          params: {
+            sessionId: sessionId,
+            eventSubType: 'speed_limit_violate',
+          },
+        }
+      );
+
+      logger.info(`Speed limit violations count for session ${sessionId}: ${response.data}`);
+      return response.data || 0;
+    } catch (error: any) {
+      logger.error('Error counting speed violations:', error.message);
+      return 0; // Return 0 on error
+    }
+  }
+
+  /**
+   * Log vehicle operation violation event
+   * According to EVENT_LOG_API.md documentation
+   */
+  async logViolationEvent(
+    eventId: string,
+    vehicleId: string,
+    violationData: {
+      timestamp: string;
+      messageId: string;
+      violationType: 'CONTINUOUS_DRIVING' | 'PARKING_DURATION' | 'SPEED_LIMIT';
+      violationValue: number;
+      violationUnit: string;
+    },
+    tripId?: string
+  ): Promise<EventLogResponse | null> {
+    try {
+      // Map violation type to eventSubType according to API docs
+      const eventSubTypeMap = {
+        'SPEED_LIMIT': 'speed_limit_violate',
+        'CONTINUOUS_DRIVING': 'continuous_driving_time_violate',
+        'PARKING_DURATION': 'parking_duration_violate',
+      };
+
+      const eventLog: EventLogRequest = {
+        eventId: eventId,
+        sessionId: tripId,
+        eventType: 'vehicle_movement',
+        eventSubType: eventSubTypeMap[violationData.violationType],
+        vehicle: {
+          vehicleId: vehicleId,
+        },
+        violationOperation: {
+          timeStamp: Math.floor(new Date(violationData.timestamp).getTime() / 1000), // Convert to Unix timestamp in seconds
+          messageId: violationData.messageId,
+          violationValue: violationData.violationValue,
+        },
+        status: VehicleState.MOVING,
+        severity: Severity.WARNING,
+        tags: ['violation', violationData.violationType.toLowerCase()],
+        eventTimestamp: violationData.timestamp,
+        correlationId: tripId,
+        metadata: {
+          sessionId: tripId,
+          notes: `${violationData.violationType} violation: ${violationData.violationValue} ${violationData.violationUnit}`,
+        },
+      };
+
+      logger.info('Logging violation event:', {
+        eventId,
+        violationType: violationData.violationType,
+        violationValue: violationData.violationValue,
+      });
+      const response = await this.client.post<EventLogResponse>('/api/event-logs', eventLog);
+
+      if (response.data && response.data.id) {
+        logger.info(`Violation event logged successfully: ${response.data.id}`, {
+          sessionId: response.data.sessionId,
+          correlationId: response.data.correlationId,
+        });
+        return response.data;
+      }
+
+      return null;
+    } catch (error: any) {
+      logger.error('Error logging violation event:', error.message);
+      // Don't throw - event logging should not block the main flow
+      return null;
     }
   }
 }

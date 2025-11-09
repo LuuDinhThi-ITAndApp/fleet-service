@@ -1,7 +1,7 @@
 import mqtt, { MqttClient } from 'mqtt';
 import { config } from '../config';
 import { logger } from '../utils/logger';
-import { EdgeEvent, GPSDataPayload, GPSDataPoint, DriverRequestPayload, DriverInfoPayload, DriverCheckInPayload, CheckOutConfirmRequestPayload, CheckOutConfirmResponsePayload, DriverCheckOutPayload, ParkingStateEvent, DrivingTimeEvent } from '../types';
+import { EdgeEvent, GPSDataPayload, GPSDataPoint, DriverRequestPayload, DriverInfoPayload, DriverCheckInPayload, CheckOutConfirmRequestPayload, CheckOutConfirmResponsePayload, DriverCheckOutPayload, ParkingStateEvent, DrivingTimeEvent, VehicleOperationManagerEvent } from '../types';
 import { redisClient } from './redis';
 import { timescaleDB } from './timescaledb';
 import { socketIOServer } from '../server/socketio';
@@ -69,6 +69,7 @@ class MQTTService {
       config.mqtt.topics.driverCheckOut,
       config.mqtt.topics.parkingState,
       config.mqtt.topics.drivingTime,
+      config.mqtt.topics.vehicleOperationManager,
     ];
 
     topics.forEach(topic => {
@@ -120,6 +121,10 @@ class MQTTService {
       // Check if this is a continuous driving time message
       else if (topic.includes('driving_session/continuous_driving_time')) {
         await this.handleContinuousDrivingTime(deviceId, message as DrivingTimeEvent);
+      }
+      // Check if this is a vehicle operation manager message
+      else if (topic.includes('driving_session/vehicle_operation_manager')) {
+        await this.handleVehicleOperationManager(deviceId, message as VehicleOperationManagerEvent);
       }
       else {
         // Handle generic event
@@ -918,6 +923,109 @@ class MQTTService {
 
     } catch (error) {
       logger.error('Error handling continuous driving time:', error);
+    }
+  }
+
+  /**
+   * Handle vehicle operation manager messages (violations)
+   * Each message contains only ONE violation at a time (non-violating values are 0)
+   */
+  private async handleVehicleOperationManager(deviceId: string, payload: VehicleOperationManagerEvent): Promise<void> {
+    try {
+      logger.info(`Received vehicle operation manager event from device: ${deviceId}`);
+
+      // TODO: Map deviceId to vehicleId (UUID from API)
+      const vehicleId = "770e8400-e29b-41d4-a716-446655440002";
+
+      // Get latest trip
+      const latestTrip = await tripService.getLatestTrip(vehicleId);
+
+      if (!latestTrip) {
+        logger.info(`No active trip found for vehicle ${vehicleId}. Cannot log violation.`);
+        return;
+      }
+
+      const timestamp = new Date(payload.time_stamp).toISOString();
+      const violations = payload.violation_operation;
+
+      // Determine which violation is active (non-zero value)
+      let violationType: 'CONTINUOUS_DRIVING' | 'PARKING_DURATION' | 'SPEED_LIMIT' | null = null;
+      let violationValue = 0;
+      let violationUnit = '';
+
+      if (violations.continuous_driving_time_violate > 0) {
+        violationType = 'CONTINUOUS_DRIVING';
+        violationValue = violations.continuous_driving_time_violate;
+        violationUnit = 'minutes';
+      } else if (violations.parking_duration_violate > 0) {
+        violationType = 'PARKING_DURATION';
+        violationValue = violations.parking_duration_violate;
+        violationUnit = 'minutes';
+      } else if (violations.speed_limit_violate > 0) {
+        violationType = 'SPEED_LIMIT';
+        violationValue = violations.speed_limit_violate;
+        violationUnit = 'km/h';
+      }
+
+      // If no violation is detected, log and return
+      if (!violationType) {
+        logger.info(`No active violation in message from ${deviceId}`);
+        return;
+      }
+
+      // Log the violation event
+      const eventId = `violation_${deviceId}_${payload.message_id}`;
+      await eventLogService.logViolationEvent(
+        eventId,
+        vehicleId,
+        {
+          timestamp,
+          messageId: payload.message_id,
+          violationType,
+          violationValue,
+          violationUnit,
+        },
+        latestTrip.id
+      );
+
+      logger.info(`Violation logged: ${violationType} = ${violationValue} ${violationUnit}`);
+
+      // Count speed violations if this is a speed violation
+      let speedViolationCount = 0;
+      if (violationType === 'SPEED_LIMIT') {
+        speedViolationCount = await eventLogService.countSpeedViolationsBySession(latestTrip.id);
+      }
+
+      // Emit to Socket.IO - only the active violation, others are 0
+      socketIOServer.emit('violation:detected', {
+        device_id: deviceId,
+        trip_id: latestTrip.id,
+        trip_number: latestTrip.tripNumber,
+        violation_type: violationType,
+        continuous_driving_time_violate: violations.continuous_driving_time_violate,
+        parking_duration_violate: violations.parking_duration_violate,
+        speed_limit_violate: violations.speed_limit_violate,
+        speed_violation_count: speedViolationCount, // Only count speed violations
+        message_id: payload.message_id,
+        time_stamp: payload.time_stamp,
+      });
+
+      // Emit to specific device room
+      socketIOServer.to(`device:${deviceId}`).emit('device:violation', {
+        device_id: deviceId,
+        violation_type: violationType,
+        violation_value: violationValue,
+        violation_unit: violationUnit,
+        speed_violation_count: speedViolationCount, // Only count speed violations
+        trip_id: latestTrip.id,
+        message_id: payload.message_id,
+        time_stamp: payload.time_stamp,
+      });
+
+      logger.info(`Vehicle operation violation processed successfully for ${deviceId}${violationType === 'SPEED_LIMIT' ? `. Speed violations in session: ${speedViolationCount}` : ''}`);
+
+    } catch (error) {
+      logger.error('Error handling vehicle operation manager:', error);
     }
   }
 

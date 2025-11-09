@@ -173,3 +173,13 @@ export interface DrivingTimeEvent {
   continuous_driving_time: number; // Unit: seconds
   driving_duration: number; // Total driving time in a day. Unit: seconds
 }
+
+export interface VehicleOperationManagerEvent {
+  time_stamp: number;
+  message_id: string;
+  violation_operation: {
+    continuous_driving_time_violate: number; // in minutes
+    parking_duration_violate: number; // in minutes
+    speed_limit_violate: number; // in km/h
+  };
+}
