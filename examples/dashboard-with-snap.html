@@ -1,0 +1,688 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>GPS Tracking Dashboard with Snap-to-Road</title>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <script src="https://cdn.socket.io/4.5.4/socket.io.min.js"></script>
+  <style>
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+
+    body {
+      font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+      background: #1a1a2e;
+      color: #eee;
+    }
+
+    #map {
+      height: 100vh;
+      width: 100%;
+    }
+
+    .info-panel {
+      position: absolute;
+      top: 10px;
+      right: 10px;
+      background: rgba(26, 26, 46, 0.95);
+      padding: 20px;
+      border-radius: 10px;
+      box-shadow: 0 4px 6px rgba(0, 0, 0, 0.3);
+      z-index: 1000;
+      min-width: 350px;
+      max-height: 90vh;
+      overflow-y: auto;
+    }
+
+    .info-panel h2 {
+      color: #00d4ff;
+      margin-bottom: 15px;
+      font-size: 20px;
+      border-bottom: 2px solid #00d4ff;
+      padding-bottom: 10px;
+    }
+
+    .info-panel h3 {
+      color: #ffd700;
+      margin-top: 15px;
+      margin-bottom: 10px;
+      font-size: 16px;
+    }
+
+    .info-item {
+      margin: 8px 0;
+      padding: 8px;
+      background: rgba(255, 255, 255, 0.05);
+      border-radius: 5px;
+      font-size: 14px;
+    }
+
+    .info-item strong {
+      color: #00d4ff;
+      display: inline-block;
+      width: 140px;
+    }
+
+    .device-selector {
+      margin-bottom: 15px;
+    }
+
+    .device-selector select {
+      width: 100%;
+      padding: 10px;
+      background: #0f3460;
+      color: #eee;
+      border: 1px solid #00d4ff;
+      border-radius: 5px;
+      font-size: 14px;
+      cursor: pointer;
+      font-weight: bold;
+    }
+
+    .device-selector select:focus {
+      outline: none;
+      border-color: #00ff88;
+      box-shadow: 0 0 10px rgba(0, 255, 136, 0.3);
+    }
+
+    .device-selector label {
+      display: block;
+      margin-bottom: 5px;
+      color: #ffd700;
+      font-size: 13px;
+      font-weight: bold;
+    }
+
+    .status {
+      display: inline-block;
+      padding: 3px 8px;
+      border-radius: 3px;
+      font-size: 12px;
+      font-weight: bold;
+    }
+
+    .status.online {
+      background: #00ff88;
+      color: #000;
+    }
+
+    .status.offline {
+      background: #ff4444;
+      color: #fff;
+    }
+
+    .controls {
+      margin-top: 15px;
+      padding-top: 15px;
+      border-top: 1px solid #444;
+    }
+
+    .controls button {
+      width: 100%;
+      padding: 10px;
+      margin: 5px 0;
+      background: #0f3460;
+      color: #00d4ff;
+      border: 1px solid #00d4ff;
+      border-radius: 5px;
+      cursor: pointer;
+      font-size: 14px;
+      font-weight: bold;
+      transition: all 0.3s;
+    }
+
+    .controls button:hover {
+      background: #00d4ff;
+      color: #000;
+    }
+
+    .legend {
+      margin-top: 15px;
+      padding-top: 15px;
+      border-top: 1px solid #444;
+    }
+
+    .legend-item {
+      display: flex;
+      align-items: center;
+      margin: 8px 0;
+    }
+
+    .legend-line {
+      width: 30px;
+      height: 3px;
+      margin-right: 10px;
+    }
+
+    .raw-line {
+      background: #ff4444;
+    }
+
+    .snapped-line {
+      background: #00ff88;
+    }
+
+    .confidence-bar {
+      height: 8px;
+      background: #00ff88;
+      border-radius: 4px;
+      margin-top: 5px;
+      transition: width 0.3s;
+    }
+
+    /* Car icon styles */
+    .vehicle-marker {
+      transition: all 0.3s ease-out;
+    }
+
+    .vehicle-marker svg {
+      filter: drop-shadow(0 2px 4px rgba(0,0,0,0.5));
+    }
+  </style>
+</head>
+<body>
+  <div id="map"></div>
+  
+  <div class="info-panel">
+    <h2>🚗 GPS Tracking với Snap-to-Road</h2>
+    
+    <div class="device-selector">
+      <label for="deviceSelect">📱 Select Device:</label>
+      <select id="deviceSelect">
+        <option value="">Chọn thiết bị...</option>
+      </select>
+    </div>
+
+    <div class="info-item">
+      <strong>Trạng thái:</strong>
+      <span class="status offline" id="connectionStatus">Offline</span>
+    </div>
+
+    <div class="info-item">
+      <strong>Devices:</strong>
+      <span id="deviceCount">0</span>
+    </div>
+
+    <div class="info-item">
+      <strong>Total Points:</strong>
+      <span id="totalPoints">0</span>
+    </div>
+
+    <h3>📍 Raw GPS (Realtime)</h3>
+    <div class="info-item">
+      <strong>Latitude:</strong>
+      <span id="rawLat">-</span>
+    </div>
+    <div class="info-item">
+      <strong>Longitude:</strong>
+      <span id="rawLng">-</span>
+    </div>
+    <div class="info-item">
+      <strong>Speed:</strong>
+      <span id="rawSpeed">-</span> km/h
+    </div>
+    <div class="info-item">
+      <strong>Accuracy:</strong>
+      <span id="rawAccuracy">-</span> m
+    </div>
+
+    <h3>🛣️ Snapped GPS (Road-matched)</h3>
+    <div class="info-item">
+      <strong>Confidence:</strong>
+      <span id="snapConfidence">-</span>%
+      <div class="confidence-bar" id="confidenceBar" style="width: 0%"></div>
+    </div>
+    <div class="info-item">
+      <strong>Distance:</strong>
+      <span id="snapDistance">-</span> m
+    </div>
+    <div class="info-item">
+      <strong>Points:</strong>
+      <span id="snapPoints">-</span> → <span id="snapPointsSnapped">-</span>
+    </div>
+    <div class="info-item">
+      <strong>Duration:</strong>
+      <span id="snapDuration">-</span> s
+    </div>
+
+    <div class="legend">
+      <div class="legend-item">
+        <div class="legend-line raw-line" id="rawLegendLine"></div>
+        <span>Raw GPS Path (Current Device)</span>
+      </div>
+      <div class="legend-item">
+        <div class="legend-line snapped-line" id="snappedLegendLine"></div>
+        <span>Snapped to Road (Current Device)</span>
+      </div>
+      <div class="legend-item" style="margin-top: 10px; font-size: 12px; color: #aaa;">
+        <span>💡 Mỗi device có màu riêng</span>
+      </div>
+    </div>
+
+    <div class="controls">
+      <button onclick="clearPaths()" title="Xóa tất cả route của mọi device">🗑️ Clear All Paths</button>
+      <button onclick="clearCurrentDevicePath()" title="Xóa route của device đang chọn">🗑️ Clear Current Device</button>
+      <button onclick="toggleRawPath()" title="Ẩn/hiện raw GPS path">👁️ Toggle Raw Path</button>
+      <button onclick="toggleSnappedPath()" title="Ẩn/hiện snapped road path">👁️ Toggle Snapped Path</button>
+      <button onclick="fitBoundsToDevice()" title="Zoom vào toàn bộ route của device">🎯 Fit to Route</button>
+    </div>
+  </div>
+
+  <script>
+    // Socket.IO connection
+    const socket = io('http://localhost:3000');
+
+    // Map initialization (Vietnam center)
+    const map = L.map('map').setView([21.0285, 105.8542], 13);
+    
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+      attribution: '© OpenStreetMap contributors',
+      maxZoom: 19
+    }).addTo(map);
+
+    // Data structures
+    let currentDevice = '';
+    let deviceMarkers = {};
+    let rawPaths = {};
+    let snappedPaths = {};
+    let deviceColors = {}; // Store color for each device
+    let deviceLastHeading = {}; // Store last heading for each device
+    let deviceLastPosition = {}; // Store last position for smooth updates
+    let lastSnappedCoords = {}; // Track last snapped coordinate to avoid duplicates
+    let showRawPath = false;  // Don't show raw path by default
+    let showSnappedPath = true;
+    let devices = new Set();
+
+    // Generate random color for device
+    function getDeviceColor(deviceId) {
+      if (!deviceColors[deviceId]) {
+        const hue = Math.floor(Math.random() * 360);
+        deviceColors[deviceId] = {
+          raw: `hsl(${hue}, 80%, 50%)`,
+          snapped: `hsl(${hue}, 90%, 60%)`
+        };
+      }
+      return deviceColors[deviceId];
+    }
+
+    // Calculate heading/bearing between two points
+    function calculateHeading(lat1, lon1, lat2, lon2) {
+      const dLon = (lon2 - lon1) * Math.PI / 180;
+      const y = Math.sin(dLon) * Math.cos(lat2 * Math.PI / 180);
+      const x = Math.cos(lat1 * Math.PI / 180) * Math.sin(lat2 * Math.PI / 180) -
+                Math.sin(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) * Math.cos(dLon);
+      const heading = Math.atan2(y, x) * 180 / Math.PI;
+      return (heading + 360) % 360;
+    }
+
+    // Create car icon SVG
+    function createCarIcon(color, heading = 0) {
+      return L.divIcon({
+        className: 'vehicle-marker',
+        html: `
+          <svg width="32" height="32" viewBox="0 0 32 32" style="transform: rotate(${heading}deg);">
+            <g transform="translate(16, 16)">
+              <!-- Car body -->
+              <path d="M -6,-10 L -8,-4 L -8,6 L -6,10 L 6,10 L 8,6 L 8,-4 L 6,-10 Z" 
+                    fill="${color}" stroke="white" stroke-width="1.5"/>
+              <!-- Windshield -->
+              <path d="M -5,-8 L -6,-2 L 6,-2 L 5,-8 Z" 
+                    fill="rgba(255,255,255,0.3)" stroke="white" stroke-width="0.5"/>
+              <!-- Wheels -->
+              <circle cx="-6" cy="-6" r="2" fill="#333" stroke="white" stroke-width="1"/>
+              <circle cx="6" cy="-6" r="2" fill="#333" stroke="white" stroke-width="1"/>
+              <circle cx="-6" cy="6" r="2" fill="#333" stroke="white" stroke-width="1"/>
+              <circle cx="6" cy="6" r="2" fill="#333" stroke="white" stroke-width="1"/>
+              <!-- Headlights -->
+              <circle cx="-4" cy="-10" r="1" fill="yellow" opacity="0.8"/>
+              <circle cx="4" cy="-10" r="1" fill="yellow" opacity="0.8"/>
+            </g>
+          </svg>
+        `,
+        iconSize: [32, 32],
+        iconAnchor: [16, 16]
+      });
+    }
+
+    // Socket.IO events
+    socket.on('connect', () => {
+      console.log('Connected to server');
+      document.getElementById('connectionStatus').textContent = 'Online';
+      document.getElementById('connectionStatus').className = 'status online';
+    });
+
+    socket.on('disconnect', () => {
+      console.log('Disconnected from server');
+      document.getElementById('connectionStatus').textContent = 'Offline';
+      document.getElementById('connectionStatus').className = 'status offline';
+    });
+
+    // Raw GPS data
+    socket.on('gps:raw', (data) => {
+      console.log('Raw GPS:', data);
+      
+      // Add device to selector
+      if (!devices.has(data.device_id)) {
+        devices.add(data.device_id);
+        addDeviceToSelector(data.device_id);
+        updateStats();
+      }
+
+      // Update marker
+      const latLng = [data.gps_data.latitude, data.gps_data.longitude];
+      const colors = getDeviceColor(data.device_id);
+      
+      if (!deviceMarkers[data.device_id]) {
+        // Create new marker with car icon at initial position
+        const carIcon = createCarIcon(colors.snapped, 0);
+        deviceMarkers[data.device_id] = L.marker(latLng, { icon: carIcon })
+          .bindPopup(`<b>Device:</b> ${data.device_id}<br><b>Speed:</b> ${(data.gps_data.speed * 3.6).toFixed(1)} km/h`)
+          .addTo(map);
+        
+        deviceLastHeading[data.device_id] = 0;
+        deviceLastPosition[data.device_id] = latLng;
+      }
+      // Don't update marker position here - let snapped data handle it
+      // This prevents jumping back to raw GPS position
+
+      // Add to raw path (keep data but don't show)
+      if (!rawPaths[data.device_id]) {
+        const colors = getDeviceColor(data.device_id);
+        rawPaths[data.device_id] = L.polyline([], {
+          color: colors.raw,
+          weight: 2,
+          opacity: 0.4
+        }); // Don't add to map by default
+        
+        // Only add to map if showRawPath is true
+        if (showRawPath) {
+          rawPaths[data.device_id].addTo(map);
+        }
+      }
+      rawPaths[data.device_id].addLatLng(latLng);
+
+      // Update stats
+      updateStats();
+
+      // Update info panel if this is the selected device
+      if (data.device_id === currentDevice || !currentDevice) {
+        updateRawGPSInfo(data);
+        if (!currentDevice) {
+          currentDevice = data.device_id;
+          document.getElementById('deviceSelect').value = data.device_id;
+          updateLegendColors();
+          map.setView(latLng, 16);
+        }
+      }
+    });
+
+    // Snapped GPS data
+    socket.on('gps:snapped', (data) => {
+      console.log('Snapped GPS:', data);
+      
+      // Check confidence level
+      const confidence = data.confidence || 0;
+      const confidencePercent = (confidence * 100).toFixed(1);
+      const isLowConfidence = confidence < 0.6; // Match backend threshold of 60%
+      
+      if (isLowConfidence) {
+        console.warn(`⚠️ Low confidence (${confidencePercent}%) for ${data.device_id} - buffering more GPS points...`);
+      }
+
+      const colors = getDeviceColor(data.device_id);
+
+      // Convert GeoJSON coordinates to Leaflet format [lat, lng]
+      const snappedCoords = data.snapped_geometry.coordinates.map(coord => [coord[1], coord[0]]);
+
+      if (!snappedPaths[data.device_id]) {
+        // Create new snapped path with maximum smoothing for roundabouts
+        snappedPaths[data.device_id] = L.polyline([], {
+          color: colors.snapped,
+          weight: 5,
+          opacity: 0.8,
+          smoothFactor: 8.0,  // Increase from 5.0 to 8.0 for extreme smoothing (especially roundabouts)
+          lineCap: 'round',
+          lineJoin: 'round'
+        }).addTo(map);
+        lastSnappedCoords[data.device_id] = null;
+      }
+      
+      // Decimation: Only add point if it's significantly different from last point
+      // Increased threshold for roundabouts to prevent zigzag
+      if (snappedCoords.length > 0) {
+        const newPoint = snappedCoords[snappedCoords.length - 1];
+        const lastPoint = lastSnappedCoords[data.device_id];
+        
+        // Distance threshold: 10 meters (increased from 5m for better smoothing)
+        const shouldAddPoint = !lastPoint || 
+            map.distance(lastPoint, newPoint) > 10;
+        
+        if (shouldAddPoint) {
+          snappedPaths[data.device_id].addLatLng(newPoint);
+          lastSnappedCoords[data.device_id] = newPoint;
+          
+          // Update marker position to snapped location (smooth on road)
+          if (deviceMarkers[data.device_id]) {
+            const currentPos = deviceMarkers[data.device_id].getLatLng();
+            let heading = deviceLastHeading[data.device_id] || 0;
+            
+            // Calculate heading from movement on snapped path
+            const distance = map.distance(currentPos, newPoint);
+            
+            // Get speed from original GPS data to detect roundabouts (low speed)
+            const currentSpeed = data.original_points && data.original_points.length > 0 
+              ? data.original_points[data.original_points.length - 1].speed * 3.6 
+              : 0;
+            
+            // Adaptive update threshold based on speed
+            // Higher threshold (10m) for low speed areas like roundabouts
+            // Lower threshold (5m) for normal driving
+            const updateThreshold = currentSpeed < 20 ? 10 : 5;
+            
+            // Only update marker if moved significant distance
+            if (distance > updateThreshold) {
+              const newHeading = calculateHeading(currentPos.lat, currentPos.lng, newPoint[0], newPoint[1]);
+              
+              // Smooth heading change - avoid sudden jumps
+              const headingDiff = ((newHeading - heading + 540) % 360) - 180;
+              
+              // Progressive heading update for smooth rotation
+              // More aggressive smoothing for low speed (roundabouts)
+              const smoothFactor = currentSpeed < 20 ? 0.5 : 0.7; // 50% for roundabouts, 70% for normal
+              
+              if (Math.abs(headingDiff) < 120) { // Allow larger heading changes
+                heading = heading + headingDiff * smoothFactor;
+                heading = (heading + 360) % 360; // Normalize to 0-360
+                deviceLastHeading[data.device_id] = heading;
+              }
+              
+              // Update marker with snapped position
+              const carIcon = createCarIcon(colors.snapped, heading);
+              deviceMarkers[data.device_id].setIcon(carIcon);
+              deviceMarkers[data.device_id].setLatLng(newPoint);
+            }
+            
+            // Check confidence level
+            const confidence = data.confidence || 0;
+            const confidencePercent = (confidence * 100).toFixed(1);
+            const isLowConfidence = confidence < 0.6; // Match backend threshold of 60%
+            
+            const confidenceLabel = isLowConfidence 
+              ? `<span style="color: orange; font-weight: bold;">⚠️ ${confidencePercent}% (Low)</span>`
+              : `<span style="color: green;">${confidencePercent}%</span>`;
+            
+            deviceMarkers[data.device_id].setPopupContent(
+              `<b>Device:</b> ${data.device_id}<br>` +
+              `<b>Speed:</b> ${currentSpeed.toFixed(1)} km/h<br>` +
+              `<b>Heading:</b> ${heading.toFixed(0)}°<br>` +
+              `<b>Confidence:</b> ${confidenceLabel}<br>` +
+              `<b>Points:</b> ${data.original_count}→${data.snapped_count}`
+            );
+          }
+        }
+      }
+
+      // Update info panel if this is the selected device
+      if (data.device_id === currentDevice) {
+        updateSnappedGPSInfo(data);
+      }
+    });
+
+    // Update raw GPS info
+    function updateRawGPSInfo(data) {
+      document.getElementById('rawLat').textContent = data.gps_data.latitude.toFixed(6);
+      document.getElementById('rawLng').textContent = data.gps_data.longitude.toFixed(6);
+      document.getElementById('rawSpeed').textContent = (data.gps_data.speed * 3.6).toFixed(1);
+      document.getElementById('rawAccuracy').textContent = data.gps_data.accuracy.toFixed(1);
+    }
+
+    // Update snapped GPS info
+    function updateSnappedGPSInfo(data) {
+      const confidence = (data.confidence * 100).toFixed(1);
+      document.getElementById('snapConfidence').textContent = confidence;
+      document.getElementById('confidenceBar').style.width = confidence + '%';
+      document.getElementById('snapDistance').textContent = data.distance.toFixed(0);
+      document.getElementById('snapPoints').textContent = data.original_count;
+      document.getElementById('snapPointsSnapped').textContent = data.snapped_count;
+      document.getElementById('snapDuration').textContent = data.duration.toFixed(1);
+    }
+
+    // Add device to selector
+    function addDeviceToSelector(deviceId) {
+      const select = document.getElementById('deviceSelect');
+      const option = document.createElement('option');
+      option.value = deviceId;
+      option.textContent = deviceId;
+      select.appendChild(option);
+    }
+
+    // Device selector change
+    document.getElementById('deviceSelect').addEventListener('change', (e) => {
+      currentDevice = e.target.value;
+      if (currentDevice) {
+        // Update legend colors
+        updateLegendColors();
+        
+        // Fit to device route
+        if (deviceMarkers[currentDevice]) {
+          fitBoundsToDevice();
+        }
+      }
+    });
+
+    // Update legend colors based on current device
+    function updateLegendColors() {
+      if (currentDevice && deviceColors[currentDevice]) {
+        const colors = deviceColors[currentDevice];
+        document.getElementById('rawLegendLine').style.background = colors.raw;
+        document.getElementById('snappedLegendLine').style.background = colors.snapped;
+      } else {
+        // Default colors
+        document.getElementById('rawLegendLine').style.background = '#ff4444';
+        document.getElementById('snappedLegendLine').style.background = '#00ff88';
+      }
+    }
+
+    // Update statistics
+    function updateStats() {
+      document.getElementById('deviceCount').textContent = devices.size;
+      
+      let totalPoints = 0;
+      Object.values(rawPaths).forEach(path => {
+        totalPoints += path.getLatLngs().length;
+      });
+      document.getElementById('totalPoints').textContent = totalPoints;
+    }
+
+    // Control functions
+    function clearPaths() {
+      // Clear raw paths
+      Object.values(rawPaths).forEach(path => map.removeLayer(path));
+      rawPaths = {};
+      
+      // Clear snapped paths
+      Object.values(snappedPaths).forEach(path => map.removeLayer(path));
+      snappedPaths = {};
+      lastSnappedCoords = {};
+      
+      console.log('All paths cleared');
+    }
+
+    function clearCurrentDevicePath() {
+      if (!currentDevice) {
+        alert('Please select a device first');
+        return;
+      }
+
+      // Clear current device paths
+      if (rawPaths[currentDevice]) {
+        map.removeLayer(rawPaths[currentDevice]);
+        delete rawPaths[currentDevice];
+      }
+      
+      if (snappedPaths[currentDevice]) {
+        map.removeLayer(snappedPaths[currentDevice]);
+        delete snappedPaths[currentDevice];
+        delete lastSnappedCoords[currentDevice];
+      }
+      
+      console.log(`Paths cleared for device: ${currentDevice}`);
+    }
+
+    function fitBoundsToDevice() {
+      if (!currentDevice) {
+        alert('Please select a device first');
+        return;
+      }
+
+      const bounds = L.latLngBounds([]);
+      let hasPoints = false;
+
+      // Add raw path bounds
+      if (rawPaths[currentDevice] && rawPaths[currentDevice].getLatLngs().length > 0) {
+        bounds.extend(rawPaths[currentDevice].getBounds());
+        hasPoints = true;
+      }
+
+      // Add snapped path bounds
+      if (snappedPaths[currentDevice] && snappedPaths[currentDevice].getLatLngs().length > 0) {
+        bounds.extend(snappedPaths[currentDevice].getBounds());
+        hasPoints = true;
+      }
+
+      if (hasPoints) {
+        map.fitBounds(bounds, { padding: [50, 50] });
+      } else {
+        alert('No route data available for this device');
+      }
+    }
+
+    function toggleRawPath() {
+      showRawPath = !showRawPath;
+      Object.values(rawPaths).forEach(path => {
+        if (showRawPath) {
+          path.addTo(map);
+        } else {
+          map.removeLayer(path);
+        }
+      });
+    }
+
+    function toggleSnappedPath() {
+      showSnappedPath = !showSnappedPath;
+      Object.values(snappedPaths).forEach(path => {
+        if (showSnappedPath) {
+          path.addTo(map);
+        } else {
+          map.removeLayer(path);
+        }
+      });
+    }
+  </script>
+</body>
+</html>
