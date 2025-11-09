@@ -90,6 +90,7 @@ interface EventLogRequest {
   relatedEventIds?: string[];
   correlationId?: string;
   metadata?: {
+    sessionId?: string;
     weather?: string;
     trafficCondition?: string;
     notes?: string;
