@@ -151,6 +151,53 @@ class RedisClient {
       throw error;
     }
   }
+
+  /**
+   * Cache parking event MongoDB ID when vehicle parks
+   * @param parkingId - The parking ID from MQTT message
+   * @param mongoId - MongoDB event log ID
+   */
+  async cacheParkingEventId(parkingId: string, mongoId: string): Promise<void> {
+    try {
+      const key = `parking:${parkingId}:event_id`;
+      // Cache for 24 hours (parking should not last longer than this)
+      await this.client.setEx(key, 86400, mongoId);
+      logger.debug(`Cached parking event ID: ${parkingId} -> ${mongoId}`);
+    } catch (error) {
+      logger.error('Error caching parking event ID:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Get cached parking event MongoDB ID
+   * @param parkingId - The parking ID from MQTT message
+   * @returns MongoDB event log ID or null if not found
+   */
+  async getParkingEventId(parkingId: string): Promise<string | null> {
+    try {
+      const key = `parking:${parkingId}:event_id`;
+      const mongoId = await this.client.get(key);
+      return mongoId;
+    } catch (error) {
+      logger.error('Error getting parking event ID:', error);
+      return null;
+    }
+  }
+
+  /**
+   * Delete cached parking event ID when parking ends
+   * @param parkingId - The parking ID from MQTT message
+   */
+  async deleteParkingEventId(parkingId: string): Promise<void> {
+    try {
+      const key = `parking:${parkingId}:event_id`;
+      await this.client.del(key);
+      logger.debug(`Deleted parking event ID: ${parkingId}`);
+    } catch (error) {
+      logger.error('Error deleting parking event ID:', error);
+    }
+  }
 }
 
 export const redisClient = new RedisClient();

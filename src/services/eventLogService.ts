@@ -90,6 +90,7 @@ interface EventLogRequest {
   relatedEventIds?: string[];
   correlationId?: string;
   metadata?: {
+    sessionId?: string;
     weather?: string;
     trafficCondition?: string;
     notes?: string;
@@ -104,15 +105,13 @@ interface EventLogRequest {
 }
 
 interface EventLogResponse {
-  description: string;
-  traceId?: string;
-  data: {
-    id: string;
-    eventId: string;
-    eventType: string;
-    status: string;
-    [key: string]: any;
-  };
+  id: string;
+  eventId: string;
+  sessionId?: string;
+  eventType: string;
+  status: string;
+  correlationId?: string;
+  [key: string]: any;
 }
 
 class EventLogService {
@@ -141,7 +140,7 @@ class EventLogService {
       address?: string;
     },
     tripId?: string
-  ): Promise<EventLogResponse['data'] | null> {
+  ): Promise<EventLogResponse | null> {
     try {
       const eventLog: EventLogRequest = {
         eventId: eventId,
@@ -174,18 +173,28 @@ class EventLogService {
         eventTimestamp: checkInData.checkInTimestamp,
         correlationId: tripId,
         metadata: {
+          sessionId: tripId,
           notes: `Driver ${driverInfo.name} checked in`,
         },
       };
 
-      logger.info('Logging check-in event:', { eventId });
+      logger.info('Logging check-in event:', {
+        eventId,
+        sessionId: tripId,
+        hasSessionId: !!eventLog.sessionId,
+        payload: JSON.stringify(eventLog)
+      });
       const response = await this.client.post<EventLogResponse>('/api/event-logs', eventLog);
 
-      if (response.data && response.data.data) {
-        logger.info(`Check-in event logged successfully: ${response.data.data.id}`);
-        return response.data.data;
+      if (response.data && response.data.id) {
+        logger.info(`Check-in event logged successfully: ${response.data.id}`, {
+          sessionId: response.data.sessionId,
+          correlationId: response.data.correlationId
+        });
+        return response.data;
       }
 
+      logger.warn('⚠️ Event log API returned unexpected response structure');
       return null;
     } catch (error: any) {
       logger.error('Error logging check-in event:', error.message);
@@ -208,7 +217,7 @@ class EventLogService {
       address?: string;
     },
     tripId?: string
-  ): Promise<EventLogResponse['data'] | null> {
+  ): Promise<EventLogResponse | null> {
     try {
       const eventLog: EventLogRequest = {
         eventId: eventId,
@@ -241,6 +250,7 @@ class EventLogService {
         eventTimestamp: checkOutData.checkOutTimestamp,
         correlationId: tripId,
         metadata: {
+          sessionId: tripId,
           notes: `Driver ${driverInfo.name} checked out after ${checkOutData.workingDuration} minutes`,
         },
       };
@@ -248,9 +258,12 @@ class EventLogService {
       logger.info('Logging check-out event:', { eventId });
       const response = await this.client.post<EventLogResponse>('/api/event-logs', eventLog);
 
-      if (response.data && response.data.data) {
-        logger.info(`Check-out event logged successfully: ${response.data.data.id}`);
-        return response.data.data;
+      if (response.data && response.data.id) {
+        logger.info(`Check-out event logged successfully: ${response.data.id}`, {
+          sessionId: response.data.sessionId,
+          correlationId: response.data.correlationId
+        });
+        return response.data;
       }
 
       return null;
@@ -262,61 +275,127 @@ class EventLogService {
   }
 
   /**
-   * Log parking state change event
+   * Log parking start event (when vehicle stops)
    */
-  async logParkingStateEvent(
+  async logParkingStartEvent(
     eventId: string,
     vehicleId: string,
     parkingData: {
       parkingId: string;
-      parkingState: number;
-      parkingDuration: number;
       timestamp: string;
     },
     tripId?: string
-  ): Promise<EventLogResponse['data'] | null> {
+  ): Promise<EventLogResponse | null> {
     try {
-      const isParked = parkingData.parkingState === 0;
-      const status = isParked ? VehicleState.IDLE : VehicleState.MOVING;
-      // Parking events always have WARNING severity by default
-      const severity = Severity.WARNING;
-
       const eventLog: EventLogRequest = {
         eventId: eventId,
         sessionId: tripId,
         eventType: 'PARKING_STATE_CHANGE',
-        eventSubType: isParked ? 'PARKING_START' : 'PARKING_END',
+        eventSubType: 'PARKING_START',
         vehicle: {
           vehicleId: vehicleId,
         },
         parking: {
           parkingId: parkingData.parkingId,
-          duration: parkingData.parkingDuration,
-          status: isParked ? 'PARKED' : 'MOVING',
-          startTime: isParked ? parkingData.timestamp : undefined,
-          endTime: !isParked ? parkingData.timestamp : undefined,
+          duration: 0, // Will be updated when vehicle resumes
+          status: 'PARKED',
+          startTime: parkingData.timestamp,
         },
-        status: status,
-        severity: severity,
-        tags: ['parking', isParked ? 'idle' : 'moving', 'state-change'],
+        status: VehicleState.IDLE,
+        severity: Severity.WARNING,
+        tags: ['parking', 'idle', 'state-change'],
         eventTimestamp: parkingData.timestamp,
         correlationId: tripId,
         metadata: {
-          notes: `Vehicle ${isParked ? 'parked' : 'resumed movement'} for ${parkingData.parkingDuration} minutes`,
+          sessionId: tripId,
+          notes: `Vehicle parked`,
         },
       };
 
-      logger.info('Logging parking state event:', { eventId, parkingState: parkingData.parkingState });
+      logger.info('Logging parking start event:', { eventId, parkingId: parkingData.parkingId });
       const response = await this.client.post<EventLogResponse>('/api/event-logs', eventLog);
 
-      if (response.data && response.data.data) {
-        logger.info(`Parking state event logged successfully: ${response.data.data.id}`);
-        return response.data.data;
+      if (response.data && response.data.id) {
+        logger.info(`Parking start event logged successfully: ${response.data.id}`, {
+          sessionId: response.data.sessionId,
+          correlationId: response.data.correlationId
+        });
+        return response.data;
       }
 
       return null;
     } catch (error: any) {
-      logger.error('Error logging parking state event:', error.message);
+      logger.error('Error logging parking start event:', error.message);
+      // Don't throw - event logging should not block the main flow
+      return null;
+    }
+  }
+
+  /**
+   * Update parking event when vehicle resumes movement
+   * Fetches the existing event, updates only necessary fields, then sends the complete object
+   * This preserves all existing data like sessionId, correlationId, metadata.sessionId, etc.
+   */
+  async updateParkingEndEvent(
+    mongoId: string,
+    parkingData: {
+      parkingDuration: number;
+      endTime: string;
+    }
+  ): Promise<EventLogResponse | null> {
+    try {
+      // Step 1: Fetch the existing event
+      logger.info('Fetching existing parking event:', { mongoId });
+      const getResponse = await this.client.get<EventLogResponse>(`/api/event-logs/${mongoId}`);
+
+      if (!getResponse.data || !getResponse.data.id) {
+        logger.error('Failed to fetch existing parking event');
+        return null;
+      }
+
+      const existingEvent = getResponse.data;
+      logger.info('Existing event fetched successfully:', {
+        id: existingEvent.id,
+        hasSessionId: !!existingEvent.sessionId,
+        hasParking: !!(existingEvent as any).parking,
+      });
+
+      // Step 2: Merge existing data with updates
+      const updatedEvent = {
+        ...existingEvent,
+        eventSubType: 'PARKING_END',
+        status: VehicleState.MOVING,
+        parking: {
+          ...(existingEvent as any).parking,
+          duration: parkingData.parkingDuration,
+          status: 'COMPLETED',
+          endTime: parkingData.endTime,
+        },
+        metadata: {
+          ...(existingEvent as any).metadata,
+          notes: `Vehicle resumed movement after ${parkingData.parkingDuration} seconds`,
+        },
+      };
+
+      // Step 3: Send the complete updated object
+      logger.info('Updating parking event with merged data:', {
+        mongoId,
+        parkingDuration: parkingData.parkingDuration,
+        hasSessionId: !!updatedEvent.sessionId,
+      });
+      const response = await this.client.put<EventLogResponse>(`/api/event-logs/${mongoId}`, updatedEvent);
+
+      if (response.data && response.data.id) {
+        logger.info(`Parking event updated successfully: ${response.data.id}`, {
+          sessionId: response.data.sessionId,
+          correlationId: response.data.correlationId
+        });
+        return response.data;
+      }
+
+      return null;
+    } catch (error: any) {
+      logger.error('Error updating parking event:', error.message);
       // Don't throw - event logging should not block the main flow
       return null;
     }
