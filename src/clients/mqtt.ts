@@ -845,17 +845,23 @@ class MQTTService {
         }
       }
 
+      // Count total parking events in this session
+      const parkingCount = await eventLogService.countParkingEventsBySession(latestTrip.id);
+
       // Stream to Socket.IO for real-time monitoring
       socketIOServer.emit('parking:state', {
         device_id: deviceId,
         parking_id: payload.parking_id,
         parking_state: payload.parking_status,
         parking_duration: payload.parking_duration,
+        parking_count: parkingCount,
+        trip_id: latestTrip.id,
+        trip_number: latestTrip.tripNumber,
         message_id: payload.message_id,
         time_stamp: payload.time_stamp,
       });
 
-      logger.info(`Parking state processed successfully for ${deviceId}`);
+      logger.info(`Parking state processed successfully for ${deviceId}. Total parking events in session: ${parkingCount}`);
 
     } catch (error) {
       logger.error('Error handling parking state:', error);

@@ -400,6 +400,31 @@ class EventLogService {
       return null;
     }
   }
+
+  /**
+   * Count parking events by session ID
+   * @param sessionId - Trip/Session ID
+   * @returns Number of parking events in the session
+   */
+  async countParkingEventsBySession(sessionId: string): Promise<number> {
+    try {
+      const response = await this.client.get<number>(
+        '/api/event-logs/stats/count-by-type-and-session',
+        {
+          params: {
+            eventType: 'PARKING_STATE_CHANGE',
+            sessionId: sessionId,
+          },
+        }
+      );
+
+      logger.info(`Parking events count for session ${sessionId}: ${response.data}`);
+      return response.data;
+    } catch (error: any) {
+      logger.error('Error counting parking events:', error.message);
+      return 0; // Return 0 on error
+    }
+  }
 }
 
 export const eventLogService = new EventLogService();
