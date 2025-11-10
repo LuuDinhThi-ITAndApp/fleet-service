@@ -13,7 +13,7 @@ const { time } = require('console');
 
 const BROKER_URL = process.env.MQTT_BROKER_URL || 'mqtt://103.216.116.186:1883';
 const CSV_FILE = path.join(__dirname, 'dataClean-testRun20251106.csv');
-const PUBLISH_INTERVAL = 100; // 1 second between messages
+const PUBLISH_INTERVAL = 2000; // 2 seconds between messages
 
 // Storage for GPS data by vehicle
 const gpsDataByVehicle = {};
