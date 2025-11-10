@@ -275,7 +275,7 @@
 
   <script>
     // Socket.IO connection
-    const socket = io('http://103.216.116.186:8090');
+    const socket = io('http://localhost:3000');
 
     // Map initialization (Vietnam center)
     const map = L.map('map').setView([21.0285, 105.8542], 13);
@@ -381,7 +381,7 @@
         // Create new marker with car icon at initial position
         const carIcon = createCarIcon(colors.snapped, 0);
         deviceMarkers[data.device_id] = L.marker(latLng, { icon: carIcon })
-          .bindPopup(`<b>Device:</b> ${data.device_id}<br><b>Speed:</b> ${(data.gps_data.speed * 3.6).toFixed(1)} km/h`)
+          .bindPopup(`<b>Device:</b> ${data.device_id}<br><b>Speed:</b> ${(data.gps_data.speed).toFixed(1)} km/h`)
           .addTo(map);
         
         deviceLastHeading[data.device_id] = 0;
@@ -428,10 +428,13 @@
       // Check confidence level
       const confidence = data.confidence || 0;
       const confidencePercent = (confidence * 100).toFixed(1);
-      const isLowConfidence = confidence < 0.5; // Match backend threshold of 50%
+      const isRawFallback = data.is_raw_fallback || confidence === 0;
+      const isLowConfidence = confidence < 0.7 && !isRawFallback;
       
-      if (isLowConfidence) {
-        console.warn(`⚠️ Low confidence (${confidencePercent}%) for ${data.device_id} - buffering more GPS points...`);
+      if (isRawFallback) {
+        console.warn(`🔴 Using RAW GPS path for ${data.device_id} (confidence too low or snap failed)`);
+      } else if (isLowConfidence) {
+        console.warn(`⚠️ Low confidence (${confidencePercent}%) for ${data.device_id}`);
       }
 
       const colors = getDeviceColor(data.device_id);
@@ -440,16 +443,24 @@
       const snappedCoords = data.snapped_geometry.coordinates.map(coord => [coord[1], coord[0]]);
 
       if (!snappedPaths[data.device_id]) {
-        // Create new snapped path with high smoothing
+        // Create new snapped path
+        // Use different style for raw fallback (dashed line)
         snappedPaths[data.device_id] = L.polyline([], {
           color: colors.snapped,
           weight: 5,
-          opacity: 0.8,
-          smoothFactor: 5.0,  // Reduce from 8.0 to 5.0 - less aggressive smoothing
+          opacity: isRawFallback ? 0.6 : 0.8,
+          smoothFactor: isRawFallback ? 2.0 : 5.0,  // Less smoothing for raw GPS
           lineCap: 'round',
-          lineJoin: 'round'
+          lineJoin: 'round',
+          dashArray: isRawFallback ? '10, 5' : null  // Dashed line for raw GPS
         }).addTo(map);
         lastSnappedCoords[data.device_id] = null;
+      } else if (isRawFallback !== snappedPaths[data.device_id].options.dashArray) {
+        // Update style if switching between raw/snapped
+        snappedPaths[data.device_id].setStyle({
+          opacity: isRawFallback ? 0.6 : 0.8,
+          dashArray: isRawFallback ? '10, 5' : null
+        });
       }
       
       // Add ALL points from snapped geometry, not just the last one
@@ -481,7 +492,7 @@
           
           // Get speed from original GPS data to detect roundabouts (low speed)
           const currentSpeed = data.original_points && data.original_points.length > 0 
-            ? data.original_points[data.original_points.length - 1].speed * 3.6 
+            ? data.original_points[data.original_points.length - 1].speed
             : 0;
           
           // Adaptive update threshold based on speed
@@ -514,20 +525,25 @@
           // Check confidence level
           const confidence = data.confidence || 0;
           const confidencePercent = (confidence * 100).toFixed(1);
-          const isLowConfidence = confidence < 0.5; // Match backend threshold of 50%
+          const isRawFallback = data.is_raw_fallback || confidence === 0;
+          const isLowConfidence = confidence < 0.7 && !isRawFallback;
           
-          const confidenceLabel = isLowConfidence 
-            ? `<span style="color: orange; font-weight: bold;">⚠️ ${confidencePercent}% (Low)</span>`
-            : `<span style="color: green;">${confidencePercent}%</span>`;
+          let confidenceLabel;
+          if (isRawFallback) {
+            confidenceLabel = `<span style="color: red; font-weight: bold;">🔴 RAW GPS (No Snap)</span>`;
+          } else if (isLowConfidence) {
+            confidenceLabel = `<span style="color: orange; font-weight: bold;">⚠️ ${confidencePercent}% (Low)</span>`;
+          } else {
+            confidenceLabel = `<span style="color: green;">✅ ${confidencePercent}%</span>`;
+          }
           
           deviceMarkers[data.device_id].setPopupContent(
             `<b>Device:</b> ${data.device_id}<br>` +
             `<b>Speed:</b> ${currentSpeed.toFixed(1)} km/h<br>` +
             `<b>Heading:</b> ${heading.toFixed(0)}°<br>` +
-              `<b>Confidence:</b> ${confidenceLabel}<br>` +
-              `<b>Points:</b> ${data.original_count}→${data.snapped_count}`
-            );
-          }
+            `<b>Confidence:</b> ${confidenceLabel}<br>` +
+            `<b>Points:</b> ${data.original_count}→${data.snapped_count}`
+          );
         }
       }
 
@@ -541,15 +557,26 @@
     function updateRawGPSInfo(data) {
       document.getElementById('rawLat').textContent = data.gps_data.latitude.toFixed(6);
       document.getElementById('rawLng').textContent = data.gps_data.longitude.toFixed(6);
-      document.getElementById('rawSpeed').textContent = (data.gps_data.speed * 3.6).toFixed(1);
+      document.getElementById('rawSpeed').textContent = (data.gps_data.speed).toFixed(1);
       document.getElementById('rawAccuracy').textContent = data.gps_data.accuracy.toFixed(1);
     }
 
     // Update snapped GPS info
     function updateSnappedGPSInfo(data) {
       const confidence = (data.confidence * 100).toFixed(1);
-      document.getElementById('snapConfidence').textContent = confidence;
-      document.getElementById('confidenceBar').style.width = confidence + '%';
+      const isRawFallback = data.is_raw_fallback || data.confidence === 0;
+      
+      // Update confidence display
+      if (isRawFallback) {
+        document.getElementById('snapConfidence').textContent = 'RAW GPS';
+        document.getElementById('confidenceBar').style.width = '0%';
+        document.getElementById('confidenceBar').style.background = '#ff4444';
+      } else {
+        document.getElementById('snapConfidence').textContent = confidence;
+        document.getElementById('confidenceBar').style.width = confidence + '%';
+        document.getElementById('confidenceBar').style.background = confidence < 70 ? '#ff9800' : '#00ff88';
+      }
+      
       document.getElementById('snapDistance').textContent = data.distance.toFixed(0);
       document.getElementById('snapPoints').textContent = data.original_count;
       document.getElementById('snapPointsSnapped').textContent = data.snapped_count;

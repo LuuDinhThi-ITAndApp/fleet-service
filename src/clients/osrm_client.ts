@@ -15,9 +15,9 @@ class OsrmClient implements IOsrmClient {
   private baseUrl: string;
 
   // Performance configurations
-  private readonly MAX_POINTS_PER_BATCH = 12;
-  private readonly MAX_RADIUS = 100;     // Increase from 50 to 100m for better coverage
-  private readonly MIN_RADIUS = 20;      // Increase from 10 to 20m
+  private readonly MAX_POINTS_PER_BATCH = 5;
+  private readonly MAX_RADIUS = 50;      // Reduce from 100m to 50m - prevent matching wrong parallel roads
+  private readonly MIN_RADIUS = 10;      // Reduce from 20m to 10m - trust good GPS accuracy
   private readonly TIMEOUT_MS = 10000;   // 10 seconds
 
   constructor(baseUrl: string) {
@@ -32,6 +32,7 @@ class OsrmClient implements IOsrmClient {
 
   /**
    * Snap GPS points to road using OSRM Match API
+   * Dynamically adjust max points based on vehicle speed
    */
   public async snapToRoad(points: GpsPoint[]): Promise<SnapResultData> {
     if (points.length < 2) {
@@ -42,10 +43,25 @@ class OsrmClient implements IOsrmClient {
       };
     }
 
-    // Limit batch size for performance
-    if (points.length > this.MAX_POINTS_PER_BATCH) {
-      console.log(`[OSRM] Reducing points from ${points.length} to ${this.MAX_POINTS_PER_BATCH} for performance`);
-      points = points.slice(0, this.MAX_POINTS_PER_BATCH);
+    // Calculate dynamic max points based on average speed
+    const avgSpeed = points.reduce((sum, p) => sum + p.speed, 0) / points.length;
+    const speedKmh = avgSpeed;
+    
+    let maxPoints: number;
+    if (speedKmh < 10) {
+      maxPoints = 5; // Very slow - fewer points
+    } else if (speedKmh < 30) {
+      maxPoints = 7; // City speed - moderate
+    } else if (speedKmh < 60) {
+      maxPoints = 9; // Higher speed - more points
+    } else {
+      maxPoints = 12; // Highway - maximum points for smooth curves
+    }
+
+    // Limit batch size based on speed
+    if (points.length > maxPoints) {
+      console.log(`[OSRM] Reducing points from ${points.length} to ${maxPoints} (speed: ${speedKmh.toFixed(1)} km/h)`);
+      points = points.slice(0, maxPoints);
     }
 
     return await this.snapSingleBatch(points);
@@ -172,9 +188,22 @@ class OsrmClient implements IOsrmClient {
       console.error('[OSRM] Request error after retries');
       
       if (error instanceof Error) {
+        // Safely extract dynamic 'code' property without using TypeScript 'as' assertion
+        // to avoid emitting TypeScript-only syntax into runtime JS when files are
+        // executed directly in some environments.
+        let codeVal: unknown = undefined;
+        try {
+          // Access dynamic property using Reflect.get to avoid TypeScript 'as' syntax
+          // which may appear verbatim if the .ts file is executed without transpilation.
+          // @ts-ignore
+          codeVal = Reflect.get(error, 'code');
+        } catch (_) {
+          codeVal = undefined;
+        }
+
         console.error('[OSRM] Error:', {
           message: error.message,
-          code: (error as any).code,
+          code: codeVal,
         });
       }
 
@@ -188,6 +217,8 @@ class OsrmClient implements IOsrmClient {
 
   /**
    * Calculate optimized radius based on accuracy, speed, and position
+   * SMALLER radius = more accurate but risk no match
+   * LARGER radius = always match but risk wrong road
    */
   private calculateOptimizedRadius(
     accuracy: number, 
@@ -195,31 +226,32 @@ class OsrmClient implements IOsrmClient {
     index: number, 
     total: number
   ): number {
-    // Base radius on GPS accuracy with reasonable multiplier
-    let radius = Math.max(this.MIN_RADIUS, accuracy * 2.5);
+    // Base radius primarily on GPS accuracy
+    // Use 1.5x multiplier (reduced from 2.5x) to trust GPS more
+    let radius = Math.max(this.MIN_RADIUS, accuracy * 1.5);
 
-    // Adjust for speed
-    const speedKmh = speed * 3.6;
+    // Adjust for speed - use SMALLER values to avoid wrong roads
+    const speedKmh = speed; // speed is already in km/h
     if (speedKmh < 5) {
-      // Very slow/stationary - GPS drift common, use larger radius
-      radius = Math.max(radius, 40);
+      // Very slow/stationary - use small radius, GPS drift is common but prefer accuracy
+      radius = Math.max(radius, 15);
     } else if (speedKmh < 20) {
-      // Slow (roundabouts, turns) - moderate radius
-      radius = Math.max(radius, 50);
+      // Slow (roundabouts, turns) - small radius for precision
+      radius = Math.max(radius, 18);
     } else if (speedKmh < 50) {
-      // Normal city speed - standard radius
-      radius = Math.max(radius, 60);
+      // Normal city speed - moderate radius
+      radius = Math.max(radius, 22);
     } else {
-      // High speed - larger radius for highway
-      radius = Math.max(radius, 70);
+      // High speed highway - larger radius acceptable
+      radius = Math.max(radius, 30);
     }
 
-    // Middle points (curves/roundabouts) get significantly larger radius
+    // Middle points get slightly more tolerance for curves
     if (index > 0 && index < total - 1) {
-      radius = Math.max(radius, 60);
+      radius = Math.max(radius, 20);
     }
 
-    // Cap at maximum
+    // Cap at maximum (now 50m instead of 100m)
     radius = Math.min(this.MAX_RADIUS, radius);
 
     return Math.round(radius);
