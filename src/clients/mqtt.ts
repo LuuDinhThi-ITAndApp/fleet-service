@@ -704,13 +704,13 @@ class MQTTService {
       const endAddress = `Lat: ${checkOutData.CheckOutLocation.latitude.toFixed(6)}, Lon: ${checkOutData.CheckOutLocation.longitude.toFixed(6)}`;
 
       // Update trip with check-out data
-      const updatedTrip = await tripService.updateTripCheckOut(latestTrip.id, {
+      // updateTrip automatically preserves all existing fields (fetches existing trip first)
+      const updatedTrip = await tripService.updateTrip(latestTrip.id, {
         startTime: latestTrip.startTime, // Required by API
         endTime: endTime,
         endAddress: endAddress,
         durationMinutes: checkOutData.working_duration,
         status: 'Completed',
-        notes: "note",
       });
       // const updatedTrip = await tripService.endDrivingSession(vehicleId);
 
