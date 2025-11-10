@@ -185,7 +185,7 @@ class MQTTService {
     }
   }
 
-  /**
+    /**
    * Add GPS points to buffer for snap-to-road processing
    */
   private addToGPSBuffer(deviceId: string, points: GPSDataPoint[]): void {
@@ -198,23 +198,47 @@ class MQTTService {
       }
 
       // Filter out low accuracy points (accuracy > 50m = unreliable)
+      // Also filter out stationary/parking points (speed < 2 km/h)
       const filteredPoints = points.filter(point => {
-        if (point.accuracy > 60) {
+        // Skip low accuracy
+        if (point.accuracy > 50) {
           logger.warn(`Filtering out low accuracy GPS point (${point.accuracy}m) for ${deviceId}`);
           return false;
         }
+        
+        // Skip stationary/parking points (speed < 2 km/h = 0.56 m/s)
+        // This prevents buffering points when vehicle is parked/turning in garage
+        if (point.speed < 0.56) {
+          logger.debug(`Skipping stationary point (speed: ${(point.speed * 3.6).toFixed(1)} km/h) for ${deviceId}`);
+          return false;
+        }
+        
+        // Check distance from last buffered point
+        // Skip if too close (< 5m) to avoid accumulating points in same location
+        if (buffer!.length > 0) {
+          const lastPoint = buffer![buffer!.length - 1];
+          const latDiff = Math.abs(lastPoint.latitude - point.latitude);
+          const lonDiff = Math.abs(lastPoint.longitude - point.longitude);
+          
+          // Approximate distance check (5m ~ 0.00005 degrees)
+          if (latDiff < 0.00005 && lonDiff < 0.00005) {
+            logger.debug(`Skipping close point (< 5m from last) for ${deviceId}`);
+            return false;
+          }
+        }
+        
         return true;
       });
 
       if (filteredPoints.length === 0) {
-        logger.debug(`All GPS points filtered out for ${deviceId} due to low accuracy`);
+        logger.debug(`All GPS points filtered out for ${deviceId} (stationary/low accuracy/too close)`);
         return;
       }
 
       // Add filtered points to buffer
       buffer.push(...filteredPoints);
 
-      logger.debug(`GPS buffer for ${deviceId}: ${buffer.length} points (${filteredPoints.length} added)`);
+      logger.debug(`GPS buffer for ${deviceId}: ${buffer.length} points (${filteredPoints.length} added, ${points.length - filteredPoints.length} filtered)`);
 
       // Check if we should trigger snap-to-road
       if (buffer.length >= this.gpsBufferSize) {
