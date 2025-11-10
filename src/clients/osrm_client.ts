@@ -14,12 +14,18 @@ class OsrmClient implements IOsrmClient {
   private client: AxiosInstance;
   private baseUrl: string;
 
+  // Performance configurations
+  private readonly MAX_POINTS_PER_BATCH = 12;
+  private readonly MAX_RADIUS = 50;      // Reasonable max for urban areas
+  private readonly MIN_RADIUS = 10;       // Minimum 10m
+  private readonly TIMEOUT_MS = 10000;    // 10 seconds
+
   constructor(baseUrl: string) {
     this.baseUrl = baseUrl;
     this.client = axios.create({
       baseURL: baseUrl,
-      timeout: 15000, // Increase to 15 seconds for heavy requests
-      maxContentLength: 50000, // Increase max content length
+      timeout: this.TIMEOUT_MS,
+      maxContentLength: 50000,
       maxBodyLength: 50000,
     });
   }
@@ -36,51 +42,38 @@ class OsrmClient implements IOsrmClient {
       };
     }
 
-    // Limit to 12 points to avoid URL too long and timeout
-    // Use first, last, and evenly distributed middle points
-    let processedPoints = points;
-    if (points.length > 12) {
-      const step = Math.floor(points.length / 11); // Keep 12 points total
-      processedPoints = [
-        points[0], // Always keep first
-        ...points.slice(1, -1).filter((_, i) => i % step === 0).slice(0, 10), // Middle points
-        points[points.length - 1], // Always keep last
-      ];
-      console.log(`[OSRM] Reducing points from ${points.length} to ${processedPoints.length} to avoid timeout`);
+    // Limit batch size for performance
+    if (points.length > this.MAX_POINTS_PER_BATCH) {
+      console.log(`[OSRM] Reducing points from ${points.length} to ${this.MAX_POINTS_PER_BATCH} for performance`);
+      points = points.slice(0, this.MAX_POINTS_PER_BATCH);
     }
 
+    return await this.snapSingleBatch(points);
+  }
+
+  /**
+   * Snap single batch with optimized radius calculation
+   */
+  private async snapSingleBatch(points: GpsPoint[]): Promise<SnapResultData> {
     try {
+      const startTime = Date.now();
+
       // Build coordinates string: lng,lat;lng,lat;...
-      const coordinates = processedPoints
+      const coordinates = points
         .map((p) => `${p.longitude},${p.latitude}`)
         .join(';');
 
-      // Calculate radiuses based on GPS accuracy
-      // Use adaptive radius: larger for curves and uncertain areas
-      const radiuses = processedPoints
-        .map((p, index) => {
-          // Base radius from accuracy
-          let radius = Math.max(50, p.accuracy * 3); // Increase multiplier to 3
-          
-          // Increase radius significantly for middle points (likely in curves/roundabouts)
-          if (index > 0 && index < processedPoints.length - 1) {
-            radius = Math.max(radius, 150); // Minimum 150m for middle points (up from 100m)
-          }
-          
-          // Increase cap to 250m for better roundabout coverage
-          radius = Math.min(250, radius);
-          return radius.toFixed(0);
-        })
+      // Calculate OPTIMIZED radiuses based on accuracy and speed
+      const radiuses = points
+        .map((p, index) => this.calculateOptimizedRadius(p.accuracy, p.speed, index, points.length))
         .join(';');
 
       const url = `/match/v1/driving/${coordinates}`;
 
       console.log(
-        `[OSRM] Snapping ${processedPoints.length} points (original: ${points.length})`
+        `[OSRM] Snapping ${points.length} points, ` +
+        `radiuses: ${radiuses.split(';').slice(0, 3).join(',')}...${radiuses.split(';').slice(-1)}`
       );
-      console.log(`[OSRM] Radiuses: ${radiuses}`);
-      console.log(`[OSRM] First point: [${processedPoints[0].longitude}, ${processedPoints[0].latitude}]`);
-      console.log(`[OSRM] Last point: [${processedPoints[processedPoints.length - 1].longitude}, ${processedPoints[processedPoints.length - 1].latitude}]`);
 
       // Call OSRM API with retry on timeout
       let retries = 2;
@@ -95,10 +88,11 @@ class OsrmClient implements IOsrmClient {
               radiuses: radiuses,
               gaps: 'split',
               tidy: 'true',
-              annotations: 'true',
+              annotations: 'false', // Disable to reduce response size
             },
           });
 
+          const elapsed = Date.now() - startTime;
           const result = response.data;
 
           // Process response
@@ -107,10 +101,16 @@ class OsrmClient implements IOsrmClient {
             const snappedCount = matching.geometry.coordinates.length;
 
             console.log(
-              `[OSRM] ✅ Success (attempt ${attempt + 1}): confidence=${(matching.confidence * 100).toFixed(1)}%, ` +
-                `distance=${matching.distance.toFixed(0)}m, ` +
-                `points=${processedPoints.length}→${snappedCount}`
+              `[OSRM] ✅ Success in ${elapsed}ms (attempt ${attempt + 1}): ` +
+              `confidence=${(matching.confidence * 100).toFixed(1)}%, ` +
+              `distance=${matching.distance.toFixed(0)}m, ` +
+              `points=${points.length}→${snappedCount}`
             );
+
+            // Warn if slow
+            if (elapsed > 3000) {
+              console.warn(`[OSRM] ⚠️ Slow response: ${elapsed}ms`);
+            }
 
             return {
               success: true,
@@ -122,15 +122,14 @@ class OsrmClient implements IOsrmClient {
               snappedPointsCount: snappedCount,
             };
           } else {
-            // Log detailed error for debugging
             console.error(
               `[OSRM] ❌ Snap failed (attempt ${attempt + 1}): ${result.code} - ${result.message || 'Unknown error'}`
             );
             
-            // Try with unlimited radius as fallback
-            if (result.code === 'NoSegment') {
-              console.log('[OSRM] Retrying with unlimited radius...');
-              return await this.snapToRoadWithUnlimitedRadius(processedPoints);
+            // Try with unlimited radius as fallback on NoSegment
+            if (result.code === 'NoSegment' && attempt === retries) {
+              console.log('[OSRM] Final attempt with unlimited radius...');
+              return await this.snapToRoadWithUnlimitedRadius(points);
             }
 
             return {
@@ -143,10 +142,11 @@ class OsrmClient implements IOsrmClient {
           lastError = error;
           
           if (error.code === 'ECONNABORTED' || error.message?.includes('timeout')) {
-            console.warn(`[OSRM] ⏱️ Timeout on attempt ${attempt + 1}/${retries + 1}`);
+            console.warn(`[OSRM] ⏱️ Timeout (${this.TIMEOUT_MS}ms) on attempt ${attempt + 1}/${retries + 1}`);
             if (attempt < retries) {
               // Wait before retry (exponential backoff)
-              await new Promise(resolve => setTimeout(resolve, 1000 * (attempt + 1)));
+              const delay = 500 * (attempt + 1);
+              await new Promise(resolve => setTimeout(resolve, delay));
               continue;
             }
           }
@@ -160,10 +160,10 @@ class OsrmClient implements IOsrmClient {
       throw lastError;
       
     } catch (error) {
-      console.error('[OSRM] Request error after retries:', error);
+      console.error('[OSRM] Request error after retries');
       
       if (error instanceof Error) {
-        console.error('[OSRM] Error details:', {
+        console.error('[OSRM] Error:', {
           message: error.message,
           code: (error as any).code,
         });
@@ -175,6 +175,45 @@ class OsrmClient implements IOsrmClient {
         error: error instanceof Error ? error.message : 'Unknown error',
       };
     }
+  }
+
+  /**
+   * Calculate optimized radius based on accuracy, speed, and position
+   */
+  private calculateOptimizedRadius(
+    accuracy: number, 
+    speed: number = 0, 
+    index: number, 
+    total: number
+  ): number {
+    // Base radius on GPS accuracy with conservative multiplier
+    let radius = Math.max(this.MIN_RADIUS, accuracy * 1.5);
+
+    // Adjust for speed
+    const speedKmh = speed * 3.6;
+    if (speedKmh < 5) {
+      // Very slow/stationary - GPS drift common, use larger radius
+      radius = Math.max(radius, 20);
+    } else if (speedKmh < 20) {
+      // Slow (roundabouts, turns) - moderate radius
+      radius = Math.max(radius, 25);
+    } else if (speedKmh < 50) {
+      // Normal city speed - standard radius
+      radius = Math.max(radius, 30);
+    } else {
+      // High speed - larger radius for highway
+      radius = Math.max(radius, 40);
+    }
+
+    // Middle points (curves/roundabouts) get larger radius
+    if (index > 0 && index < total - 1) {
+      radius = Math.max(radius, 35);
+    }
+
+    // Cap at maximum
+    radius = Math.min(this.MAX_RADIUS, radius);
+
+    return Math.round(radius);
   }
 
   /**
