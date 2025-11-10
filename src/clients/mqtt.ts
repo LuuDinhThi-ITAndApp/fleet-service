@@ -20,12 +20,12 @@ class MQTTService {
   private batchTimer: NodeJS.Timeout | null = null;
   private ttlGPSCache = 30; // 30 seconds
 
-  // GPS Buffer for snap-to-road
+    // GPS Buffer for snap-to-road
   private gpsBuffers: Map<string, GPSDataPoint[]> = new Map();
-  private gpsBufferSize = 10; // Increase for better roundabout handling
-  private gpsBufferTimeout = 20000; // 20 seconds to allow more points to accumulate
+  private gpsBufferSize = 8; // Reduce for faster snapping
+  private gpsBufferTimeout = 4000; // 4 seconds
   private gpsBufferTimers: Map<string, NodeJS.Timeout> = new Map();
-  private minConfidenceThreshold = 0.6; // 60% minimum confidence
+  private minConfidenceThreshold = 0.5; // 50% minimum confidence
   private lastStreamedSnappedPoint: Map<string, [number, number]> = new Map(); // Track last streamed point per device
 
   /**
@@ -200,29 +200,29 @@ class MQTTService {
       // Filter out low accuracy points (accuracy > 50m = unreliable)
       // Also filter out stationary/parking points (speed < 2 km/h)
       const filteredPoints = points.filter(point => {
-        // Skip low accuracy
-        if (point.accuracy > 50) {
+        // Skip very low accuracy only
+        if (point.accuracy > 80) {
           logger.warn(`Filtering out low accuracy GPS point (${point.accuracy}m) for ${deviceId}`);
           return false;
         }
         
-        // Skip stationary/parking points (speed < 2 km/h = 0.56 m/s)
-        // This prevents buffering points when vehicle is parked/turning in garage
-        if (point.speed < 0.56) {
+        // Skip only completely stationary points (speed < 0.5 km/h = 0.14 m/s)
+        // Reduced threshold to keep more points
+        if (point.speed < 0.14) {
           logger.debug(`Skipping stationary point (speed: ${(point.speed * 3.6).toFixed(1)} km/h) for ${deviceId}`);
           return false;
         }
         
-        // Check distance from last buffered point
-        // Skip if too close (< 5m) to avoid accumulating points in same location
+        // Check distance from last buffered point - reduced threshold
+        // Skip if too close (< 3m) instead of 5m
         if (buffer!.length > 0) {
           const lastPoint = buffer![buffer!.length - 1];
           const latDiff = Math.abs(lastPoint.latitude - point.latitude);
           const lonDiff = Math.abs(lastPoint.longitude - point.longitude);
           
-          // Approximate distance check (5m ~ 0.00005 degrees)
-          if (latDiff < 0.00005 && lonDiff < 0.00005) {
-            logger.debug(`Skipping close point (< 5m from last) for ${deviceId}`);
+          // Approximate distance check (3m ~ 0.00003 degrees)
+          if (latDiff < 0.00003 && lonDiff < 0.00003) {
+            logger.debug(`Skipping close point (< 3m from last) for ${deviceId}`);
             return false;
           }
         }

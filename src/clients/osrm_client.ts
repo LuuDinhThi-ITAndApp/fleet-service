@@ -16,9 +16,9 @@ class OsrmClient implements IOsrmClient {
 
   // Performance configurations
   private readonly MAX_POINTS_PER_BATCH = 12;
-  private readonly MAX_RADIUS = 50;      // Reasonable max for urban areas
-  private readonly MIN_RADIUS = 10;       // Minimum 10m
-  private readonly TIMEOUT_MS = 10000;    // 10 seconds
+  private readonly MAX_RADIUS = 100;     // Increase from 50 to 100m for better coverage
+  private readonly MIN_RADIUS = 20;      // Increase from 10 to 20m
+  private readonly TIMEOUT_MS = 10000;   // 10 seconds
 
   constructor(baseUrl: string) {
     this.baseUrl = baseUrl;
@@ -186,28 +186,28 @@ class OsrmClient implements IOsrmClient {
     index: number, 
     total: number
   ): number {
-    // Base radius on GPS accuracy with conservative multiplier
-    let radius = Math.max(this.MIN_RADIUS, accuracy * 1.5);
+    // Base radius on GPS accuracy with reasonable multiplier
+    let radius = Math.max(this.MIN_RADIUS, accuracy * 2.5);
 
     // Adjust for speed
     const speedKmh = speed * 3.6;
     if (speedKmh < 5) {
       // Very slow/stationary - GPS drift common, use larger radius
-      radius = Math.max(radius, 20);
+      radius = Math.max(radius, 40);
     } else if (speedKmh < 20) {
       // Slow (roundabouts, turns) - moderate radius
-      radius = Math.max(radius, 25);
+      radius = Math.max(radius, 50);
     } else if (speedKmh < 50) {
       // Normal city speed - standard radius
-      radius = Math.max(radius, 30);
+      radius = Math.max(radius, 60);
     } else {
       // High speed - larger radius for highway
-      radius = Math.max(radius, 40);
+      radius = Math.max(radius, 70);
     }
 
-    // Middle points (curves/roundabouts) get larger radius
+    // Middle points (curves/roundabouts) get significantly larger radius
     if (index > 0 && index < total - 1) {
-      radius = Math.max(radius, 35);
+      radius = Math.max(radius, 60);
     }
 
     // Cap at maximum

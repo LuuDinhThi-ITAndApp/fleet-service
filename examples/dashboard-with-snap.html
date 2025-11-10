@@ -428,7 +428,7 @@
       // Check confidence level
       const confidence = data.confidence || 0;
       const confidencePercent = (confidence * 100).toFixed(1);
-      const isLowConfidence = confidence < 0.6; // Match backend threshold of 60%
+      const isLowConfidence = confidence < 0.5; // Match backend threshold of 50%
       
       if (isLowConfidence) {
         console.warn(`⚠️ Low confidence (${confidencePercent}%) for ${data.device_id} - buffering more GPS points...`);
@@ -440,12 +440,12 @@
       const snappedCoords = data.snapped_geometry.coordinates.map(coord => [coord[1], coord[0]]);
 
       if (!snappedPaths[data.device_id]) {
-        // Create new snapped path with maximum smoothing for roundabouts
+        // Create new snapped path with high smoothing
         snappedPaths[data.device_id] = L.polyline([], {
           color: colors.snapped,
           weight: 5,
           opacity: 0.8,
-          smoothFactor: 8.0,  // Increase from 5.0 to 8.0 for extreme smoothing (especially roundabouts)
+          smoothFactor: 5.0,  // Reduce from 8.0 to 5.0 - less aggressive smoothing
           lineCap: 'round',
           lineJoin: 'round'
         }).addTo(map);
@@ -453,14 +453,14 @@
       }
       
       // Decimation: Only add point if it's significantly different from last point
-      // Increased threshold for roundabouts to prevent zigzag
+      // Reduce threshold to keep more points for accuracy
       if (snappedCoords.length > 0) {
         const newPoint = snappedCoords[snappedCoords.length - 1];
         const lastPoint = lastSnappedCoords[data.device_id];
         
-        // Distance threshold: 10 meters (increased from 5m for better smoothing)
+        // Distance threshold: 5 meters (reduced from 10m to keep more detail)
         const shouldAddPoint = !lastPoint || 
-            map.distance(lastPoint, newPoint) > 10;
+            map.distance(lastPoint, newPoint) > 5;
         
         if (shouldAddPoint) {
           snappedPaths[data.device_id].addLatLng(newPoint);
@@ -480,9 +480,8 @@
               : 0;
             
             // Adaptive update threshold based on speed
-            // Higher threshold (10m) for low speed areas like roundabouts
-            // Lower threshold (5m) for normal driving
-            const updateThreshold = currentSpeed < 20 ? 10 : 5;
+            // Reduce thresholds to update more frequently
+            const updateThreshold = currentSpeed < 20 ? 5 : 3;
             
             // Only update marker if moved significant distance
             if (distance > updateThreshold) {
@@ -492,8 +491,8 @@
               const headingDiff = ((newHeading - heading + 540) % 360) - 180;
               
               // Progressive heading update for smooth rotation
-              // More aggressive smoothing for low speed (roundabouts)
-              const smoothFactor = currentSpeed < 20 ? 0.5 : 0.7; // 50% for roundabouts, 70% for normal
+              // Less aggressive smoothing for better responsiveness
+              const smoothFactor = currentSpeed < 20 ? 0.6 : 0.8; // 60% for roundabouts, 80% for normal
               
               if (Math.abs(headingDiff) < 120) { // Allow larger heading changes
                 heading = heading + headingDiff * smoothFactor;
@@ -510,7 +509,7 @@
             // Check confidence level
             const confidence = data.confidence || 0;
             const confidencePercent = (confidence * 100).toFixed(1);
-            const isLowConfidence = confidence < 0.6; // Match backend threshold of 60%
+            const isLowConfidence = confidence < 0.5; // Match backend threshold of 50%
             
             const confidenceLabel = isLowConfidence 
               ? `<span style="color: orange; font-weight: bold;">⚠️ ${confidencePercent}% (Low)</span>`
