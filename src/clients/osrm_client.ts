@@ -18,7 +18,9 @@ class OsrmClient implements IOsrmClient {
     this.baseUrl = baseUrl;
     this.client = axios.create({
       baseURL: baseUrl,
-      timeout: 5000,
+      timeout: 15000, // Increase to 15 seconds for heavy requests
+      maxContentLength: 50000, // Increase max content length
+      maxBodyLength: 50000,
     });
   }
 
@@ -34,21 +36,34 @@ class OsrmClient implements IOsrmClient {
       };
     }
 
+    // Limit to 12 points to avoid URL too long and timeout
+    // Use first, last, and evenly distributed middle points
+    let processedPoints = points;
+    if (points.length > 12) {
+      const step = Math.floor(points.length / 11); // Keep 12 points total
+      processedPoints = [
+        points[0], // Always keep first
+        ...points.slice(1, -1).filter((_, i) => i % step === 0).slice(0, 10), // Middle points
+        points[points.length - 1], // Always keep last
+      ];
+      console.log(`[OSRM] Reducing points from ${points.length} to ${processedPoints.length} to avoid timeout`);
+    }
+
     try {
       // Build coordinates string: lng,lat;lng,lat;...
-      const coordinates = points
+      const coordinates = processedPoints
         .map((p) => `${p.longitude},${p.latitude}`)
         .join(';');
 
       // Calculate radiuses based on GPS accuracy
       // Use adaptive radius: larger for curves and uncertain areas
-      const radiuses = points
+      const radiuses = processedPoints
         .map((p, index) => {
           // Base radius from accuracy
           let radius = Math.max(50, p.accuracy * 3); // Increase multiplier to 3
           
           // Increase radius significantly for middle points (likely in curves/roundabouts)
-          if (index > 0 && index < points.length - 1) {
+          if (index > 0 && index < processedPoints.length - 1) {
             radius = Math.max(radius, 150); // Minimum 150m for middle points (up from 100m)
           }
           
@@ -61,72 +76,96 @@ class OsrmClient implements IOsrmClient {
       const url = `/match/v1/driving/${coordinates}`;
 
       console.log(
-        `[OSRM] Snapping ${points.length} points`
+        `[OSRM] Snapping ${processedPoints.length} points (original: ${points.length})`
       );
       console.log(`[OSRM] Radiuses: ${radiuses}`);
-      console.log(`[OSRM] First point: [${points[0].longitude}, ${points[0].latitude}]`);
-      console.log(`[OSRM] Last point: [${points[points.length - 1].longitude}, ${points[points.length - 1].latitude}]`);
+      console.log(`[OSRM] First point: [${processedPoints[0].longitude}, ${processedPoints[0].latitude}]`);
+      console.log(`[OSRM] Last point: [${processedPoints[processedPoints.length - 1].longitude}, ${processedPoints[processedPoints.length - 1].latitude}]`);
 
-      // Call OSRM API
-      const response = await this.client.get<OsrmMatchResponse>(url, {
-        params: {
-          overview: 'full',
-          geometries: 'geojson',
-          radiuses: radiuses,
-          gaps: 'split',
-          tidy: 'true',
-          annotations: 'true',
-        },
-      });
+      // Call OSRM API with retry on timeout
+      let retries = 2;
+      let lastError: any = null;
+      
+      for (let attempt = 0; attempt <= retries; attempt++) {
+        try {
+          const response = await this.client.get<OsrmMatchResponse>(url, {
+            params: {
+              overview: 'full',
+              geometries: 'geojson',
+              radiuses: radiuses,
+              gaps: 'split',
+              tidy: 'true',
+              annotations: 'true',
+            },
+          });
 
-      const result = response.data;
+          const result = response.data;
 
-      // Process response
-      if (result.code === 'Ok' && result.matchings && result.matchings.length > 0) {
-        const matching = result.matchings[0];
-        const snappedCount = matching.geometry.coordinates.length;
+          // Process response
+          if (result.code === 'Ok' && result.matchings && result.matchings.length > 0) {
+            const matching = result.matchings[0];
+            const snappedCount = matching.geometry.coordinates.length;
 
-        console.log(
-          `[OSRM] ✅ Success: confidence=${(matching.confidence * 100).toFixed(1)}%, ` +
-            `distance=${matching.distance.toFixed(0)}m, ` +
-            `points=${points.length}→${snappedCount}`
-        );
+            console.log(
+              `[OSRM] ✅ Success (attempt ${attempt + 1}): confidence=${(matching.confidence * 100).toFixed(1)}%, ` +
+                `distance=${matching.distance.toFixed(0)}m, ` +
+                `points=${processedPoints.length}→${snappedCount}`
+            );
 
-        return {
-          success: true,
-          geometry: matching.geometry,
-          confidence: matching.confidence,
-          distance: matching.distance,
-          duration: matching.duration,
-          originalPointsCount: points.length,
-          snappedPointsCount: snappedCount,
-        };
-      } else {
-        // Log detailed error for debugging
-        console.error(
-          `[OSRM] ❌ Snap failed: ${result.code} - ${result.message || 'Unknown error'}`
-        );
-        console.error(`[OSRM] Response:`, JSON.stringify(result, null, 2));
-        
-        // Try with unlimited radius as fallback
-        if (result.code === 'NoSegment') {
-          console.log('[OSRM] Retrying with unlimited radius...');
-          return await this.snapToRoadWithUnlimitedRadius(points);
+            return {
+              success: true,
+              geometry: matching.geometry,
+              confidence: matching.confidence,
+              distance: matching.distance,
+              duration: matching.duration,
+              originalPointsCount: points.length,
+              snappedPointsCount: snappedCount,
+            };
+          } else {
+            // Log detailed error for debugging
+            console.error(
+              `[OSRM] ❌ Snap failed (attempt ${attempt + 1}): ${result.code} - ${result.message || 'Unknown error'}`
+            );
+            
+            // Try with unlimited radius as fallback
+            if (result.code === 'NoSegment') {
+              console.log('[OSRM] Retrying with unlimited radius...');
+              return await this.snapToRoadWithUnlimitedRadius(processedPoints);
+            }
+
+            return {
+              success: false,
+              originalPointsCount: points.length,
+              error: result.message || `OSRM returned code: ${result.code}`,
+            };
+          }
+        } catch (error: any) {
+          lastError = error;
+          
+          if (error.code === 'ECONNABORTED' || error.message?.includes('timeout')) {
+            console.warn(`[OSRM] ⏱️ Timeout on attempt ${attempt + 1}/${retries + 1}`);
+            if (attempt < retries) {
+              // Wait before retry (exponential backoff)
+              await new Promise(resolve => setTimeout(resolve, 1000 * (attempt + 1)));
+              continue;
+            }
+          }
+          
+          // Non-timeout error or last retry failed
+          throw error;
         }
-
-        return {
-          success: false,
-          originalPointsCount: points.length,
-          error: result.message || `OSRM returned code: ${result.code}`,
-        };
       }
+      
+      // All retries failed
+      throw lastError;
+      
     } catch (error) {
-      console.error('[OSRM] Request error:', error);
+      console.error('[OSRM] Request error after retries:', error);
       
       if (error instanceof Error) {
         console.error('[OSRM] Error details:', {
           message: error.message,
-          stack: error.stack,
+          code: (error as any).code,
         });
       }
 
