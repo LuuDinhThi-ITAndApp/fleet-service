@@ -20,12 +20,12 @@ class MQTTService {
   private batchTimer: NodeJS.Timeout | null = null;
   private ttlGPSCache = 30; // 30 seconds
 
-    // GPS Buffer for snap-to-road
+  // GPS Buffer for snap-to-road
   private gpsBuffers: Map<string, GPSDataPoint[]> = new Map();
-  private gpsBufferSize = 8; // Reduce for faster snapping
+  private gpsBufferSize = 8; // Base buffer size - will be adjusted dynamically based on speed
   private gpsBufferTimeout = 4000; // 4 seconds
   private gpsBufferTimers: Map<string, NodeJS.Timeout> = new Map();
-  private minConfidenceThreshold = 0.5; // 50% minimum confidence
+  private minConfidenceThreshold = 0.7; // 70% minimum confidence - stricter to avoid wrong road matches
   private lastStreamedSnappedPoint: Map<string, [number, number]> = new Map(); // Track last streamed point per device
 
   /**
@@ -197,21 +197,21 @@ class MQTTService {
         this.gpsBuffers.set(deviceId, buffer);
       }
 
-      // Filter out low accuracy points (accuracy > 50m = unreliable)
-      // Also filter out stationary/parking points (speed < 2 km/h)
+      // Filter out low accuracy points and duplicates
       const filteredPoints = points.filter(point => {
-        // Skip very low accuracy only
-        if (point.accuracy > 80) {
+        // Skip low accuracy GPS (accuracy > 50m = unreliable)
+        // Reduced from 80m to 50m to be stricter - prevents matching wrong roads
+        if (point.accuracy > 50) {
           logger.warn(`Filtering out low accuracy GPS point (${point.accuracy}m) for ${deviceId}`);
           return false;
         }
         
         // Skip only completely stationary points (speed < 0.5 km/h = 0.14 m/s)
         // Reduced threshold to keep more points
-        if (point.speed < 0.14) {
-          logger.debug(`Skipping stationary point (speed: ${(point.speed * 3.6).toFixed(1)} km/h) for ${deviceId}`);
-          return false;
-        }
+        // if (point.speed < 0.14) {
+        //   logger.debug(`Skipping stationary point (speed: ${(point.speed * 3.6).toFixed(1)} km/h) for ${deviceId}`);
+        //   return false;
+        // }
         
         // Check distance from last buffered point - reduced threshold
         // Skip if too close (< 3m) instead of 5m
@@ -240,9 +240,13 @@ class MQTTService {
 
       logger.debug(`GPS buffer for ${deviceId}: ${buffer.length} points (${filteredPoints.length} added, ${points.length - filteredPoints.length} filtered)`);
 
+      // Calculate dynamic buffer size based on current average speed
+      const dynamicBufferSize = this.calculateDynamicBufferSize(buffer);
+
       // Check if we should trigger snap-to-road
-      if (buffer.length >= this.gpsBufferSize) {
+      if (buffer.length >= dynamicBufferSize) {
         // Buffer is full, trigger snap immediately
+        logger.debug(`Dynamic buffer size reached (${buffer.length}/${dynamicBufferSize}) for ${deviceId}`);
         this.triggerSnapToRoad(deviceId);
       } else {
         // Set/reset timeout for this device
@@ -252,6 +256,41 @@ class MQTTService {
     } catch (error) {
       logger.error('Error adding to GPS buffer:', error);
     }
+  }
+
+  /**
+   * Calculate dynamic buffer size based on vehicle speed
+   * High speed = need more points for smooth curves
+   * Low speed = fewer points needed
+   */
+  private calculateDynamicBufferSize(buffer: GPSDataPoint[]): number {
+    if (buffer.length === 0) {
+      return this.gpsBufferSize; // Default 8
+    }
+
+    // Calculate average speed from recent points (last 3-5 points)
+    const recentPoints = buffer.slice(-Math.min(5, buffer.length));
+    const avgSpeed = recentPoints.reduce((sum, p) => sum + p.speed, 0) / recentPoints.length;
+    const speedKmh = avgSpeed * 3.6;
+
+    let bufferSize: number;
+
+    if (speedKmh < 10) {
+      // Very slow/parking - fewer points needed (5-6 points)
+      bufferSize = 5;
+    } else if (speedKmh < 30) {
+      // City speed - moderate points (6-8 points)
+      bufferSize = 6;
+    } else if (speedKmh < 60) {
+      // Higher city speed - more points for smooth curves (8-10 points)
+      bufferSize = 7;
+    } else {
+      // Highway speed - maximum points for very smooth rendering (10-12 points)
+      bufferSize = 8;
+    }
+
+    logger.debug(`Dynamic buffer size for speed ${speedKmh.toFixed(1)} km/h: ${bufferSize} points`);
+    return bufferSize;
   }
 
   /**
@@ -280,6 +319,17 @@ class MQTTService {
       const buffer = this.gpsBuffers.get(deviceId);
       if (!buffer || buffer.length < 2) {
         logger.debug(`Not enough GPS points for snapping (${deviceId}): ${buffer?.length || 0}`);
+        return;
+      }
+
+      // Check if vehicle is stationary/parking - skip snap to avoid clutter
+      const isStationary = this.isVehicleStationary(buffer);
+      if (isStationary) {
+        logger.debug(
+          `Vehicle ${deviceId} is stationary/parking - skipping snap-to-road to avoid clutter`
+        );
+        // Clear buffer since we're not processing
+        this.gpsBuffers.set(deviceId, []);
         return;
       }
 
@@ -322,20 +372,99 @@ class MQTTService {
           );
         }
 
-        // Check confidence threshold (lowered to 40%)
+        // Check confidence threshold (70%)
         if (confidence < this.minConfidenceThreshold) {
-          logger.warn(`Low confidence (${(confidence * 100).toFixed(1)}%) for ${deviceId}. Keeping half buffer and waiting for more...`);
+          logger.warn(
+            `Low confidence (${(confidence * 100).toFixed(1)}%) for ${deviceId}. ` +
+            `Using raw GPS path instead of unreliable snap result.`
+          );
           
-          // Keep only the most recent half of buffer for context
-          const halfBuffer = buffer.slice(-Math.ceil(buffer.length / 2));
-          this.gpsBuffers.set(deviceId, halfBuffer);
+          // Stream raw GPS geometry instead of low-confidence snap
+          this.streamRawGPSAsPath(deviceId, buffer);
           
-          // Set timeout to trigger again with more points
-          this.resetGPSBufferTimeout(deviceId);
+          // Clear buffer after using raw path
+          this.gpsBuffers.set(deviceId, []);
           return;
         }
 
-        // Good confidence - stream snapped data to Socket.IO
+        // Additional validation: Check if matched distance is reasonable
+        // Calculate approximate straight-line distance between first and last GPS points
+        const firstPoint = gpsPoints[0];
+        const lastPoint = gpsPoints[gpsPoints.length - 1];
+        const latDiff = (lastPoint.latitude - firstPoint.latitude) * 111000; // meters
+        const lngDiff = (lastPoint.longitude - firstPoint.longitude) * 111000 * Math.cos(firstPoint.latitude * Math.PI / 180);
+        const straightDistance = Math.sqrt(latDiff * latDiff + lngDiff * lngDiff);
+        
+        const matchedDistance = snapResult.distance || 0;
+        
+        // Validation 1: If matched distance is more than 3x straight distance, likely matched wrong road
+        if (matchedDistance > straightDistance * 3 && straightDistance > 20) {
+          logger.warn(
+            `⚠️ Suspicious match distance for ${deviceId}: ` +
+            `matched=${matchedDistance.toFixed(0)}m vs straight=${straightDistance.toFixed(0)}m. ` +
+            `Using raw GPS path instead.`
+          );
+          
+          // Stream raw GPS geometry instead of wrong snap
+          this.streamRawGPSAsPath(deviceId, buffer);
+          this.gpsBuffers.set(deviceId, []);
+          return;
+        }
+
+        // Validation 2: Check heading/bearing consistency
+        // Calculate raw GPS heading (first to last point)
+        const rawHeading = Math.atan2(
+          lngDiff,
+          latDiff
+        ) * 180 / Math.PI;
+        
+        // Calculate snapped path heading (first to last snapped point)
+        const snappedCoords = snapResult.geometry!.coordinates;
+        const firstSnapped = snappedCoords[0];
+        const lastSnapped = snappedCoords[snappedCoords.length - 1];
+        const snappedLatDiff = (lastSnapped[1] - firstSnapped[1]) * 111000;
+        const snappedLngDiff = (lastSnapped[0] - firstSnapped[0]) * 111000 * Math.cos(firstSnapped[1] * Math.PI / 180);
+        const snappedHeading = Math.atan2(
+          snappedLngDiff,
+          snappedLatDiff
+        ) * 180 / Math.PI;
+        
+        // Calculate heading difference (normalize to -180 to 180)
+        let headingDiff = ((snappedHeading - rawHeading + 540) % 360) - 180;
+        headingDiff = Math.abs(headingDiff);
+        
+        // If heading differs by more than 45 degrees, likely wrong road (parallel/perpendicular road)
+        if (headingDiff > 45 && straightDistance > 30) {
+          logger.warn(
+            `⚠️ Suspicious heading difference for ${deviceId}: ` +
+            `raw=${rawHeading.toFixed(0)}°, snapped=${snappedHeading.toFixed(0)}°, diff=${headingDiff.toFixed(0)}°. ` +
+            `Possibly matched wrong parallel/perpendicular road - using raw GPS.`
+          );
+          
+          this.streamRawGPSAsPath(deviceId, buffer);
+          this.gpsBuffers.set(deviceId, []);
+          return;
+        }
+
+        // Validation 3: Check path curvature ratio
+        // If raw GPS is relatively straight but snapped path is too curved, reject
+        const curvatureRatio = matchedDistance / Math.max(straightDistance, 1);
+        
+        // For straight segments (straightDistance > 50m), reject if snapped path is > 1.3x longer
+        // This catches cases where OSRM matches to curved/winding parallel road
+        if (straightDistance > 50 && curvatureRatio > 1.3) {
+          logger.warn(
+            `⚠️ Suspicious curvature for ${deviceId}: ` +
+            `straight=${straightDistance.toFixed(0)}m, matched=${matchedDistance.toFixed(0)}m, ` +
+            `ratio=${curvatureRatio.toFixed(2)}. Raw GPS appears straight but snap is too curved - using raw GPS.`
+          );
+          
+          this.streamRawGPSAsPath(deviceId, buffer);
+          this.gpsBuffers.set(deviceId, []);
+          return;
+        }
+
+        // Good confidence and reasonable distance - stream snapped data to Socket.IO
         this.streamSnappedGPSData(deviceId, {
           originalPoints: buffer,
           snapResult: snapResult,
@@ -416,8 +545,389 @@ class MQTTService {
   }
 
   /**
+   * Stream raw GPS data as path when snap confidence is too low
+   * Converts raw GPS points to GeoJSON LineString format like snapped data
+   * Applies smoothing to reduce zigzag/jitter
+   * Skips if vehicle is stationary/parking (avoid clutter in parking lots)
+   */
+  private streamRawGPSAsPath(deviceId: string, points: GPSDataPoint[]): void {
+    try {
+      if (points.length === 0) {
+        logger.warn(`No raw GPS points to stream for ${deviceId}`);
+        return;
+      }
+
+      // Check if vehicle is stationary/parking - don't stream path to avoid clutter
+      const isStationary = this.isVehicleStationary(points);
+      if (isStationary) {
+        logger.debug(
+          `Vehicle ${deviceId} is stationary/parking - skipping raw path to avoid clutter in parking lot`
+        );
+        return;
+      }
+
+      // Apply smoothing to raw GPS to reduce zigzag
+      const smoothedPoints = this.smoothGPSPoints(points);
+      
+      // Convert smoothed GPS points to GeoJSON LineString (longitude, latitude format)
+      const coordinates = smoothedPoints.map(p => [p.longitude, p.latitude]);
+      
+      // Calculate total distance between smoothed points
+      let totalDistance = 0;
+      for (let i = 1; i < smoothedPoints.length; i++) {
+        const p1 = smoothedPoints[i - 1];
+        const p2 = smoothedPoints[i];
+        const latDiff = (p2.latitude - p1.latitude) * 111000;
+        const lngDiff = (p2.longitude - p1.longitude) * 111000 * Math.cos(p1.latitude * Math.PI / 180);
+        totalDistance += Math.sqrt(latDiff * latDiff + lngDiff * lngDiff);
+      }
+
+      const streamData = {
+        device_id: deviceId,
+        timestamp: Date.now(),
+        original_points: points,
+        snapped_geometry: {
+          type: 'LineString',
+          coordinates: coordinates
+        },
+        confidence: 0.0, // 0% confidence to indicate this is raw GPS, not snapped
+        distance: totalDistance,
+        duration: 0,
+        original_count: points.length,
+        snapped_count: smoothedPoints.length,
+        is_raw_fallback: true, // Flag to indicate this is raw GPS fallback
+      };
+
+      // Emit as snapped data (same channel) but with 0% confidence
+      socketIOServer.emit('gps:snapped', streamData);
+      socketIOServer.emit(`${deviceId}:snapped`, streamData);
+
+      logger.info(
+        `Streamed raw GPS as fallback path for ${deviceId}: ${points.length} points, ` +
+        `distance=${totalDistance.toFixed(0)}m (confidence=0% - raw GPS)`
+      );
+
+    } catch (error) {
+      logger.error('Error streaming raw GPS as path:', error);
+    }
+  }
+
+  /**
+   * Check if vehicle is stationary/parking based on GPS points
+   * Returns true if vehicle is not moving significantly
+   */
+  private isVehicleStationary(points: GPSDataPoint[]): boolean {
+    if (points.length < 2) {
+      return false;
+    }
+
+    // Check average speed
+    const avgSpeed = points.reduce((sum, p) => sum + p.speed, 0) / points.length;
+    const avgSpeedKmh = avgSpeed * 3.6;
+
+    // Check maximum displacement (bounding box)
+    const lats = points.map(p => p.latitude);
+    const lngs = points.map(p => p.longitude);
+    const latRange = Math.max(...lats) - Math.min(...lats);
+    const lngRange = Math.max(...lngs) - Math.min(...lngs);
+    const maxDisplacement = Math.max(latRange, lngRange) * 111000; // meters
+
+    // Stationary if:
+    // 1. Average speed < 5 km/h AND
+    // 2. Max displacement < 20 meters (GPS drift range)
+    const isStationary = avgSpeedKmh < 5 && maxDisplacement < 20;
+
+    if (isStationary) {
+      logger.debug(
+        `Stationary detected: avgSpeed=${avgSpeedKmh.toFixed(1)} km/h, ` +
+        `maxDisplacement=${maxDisplacement.toFixed(1)}m`
+      );
+    }
+
+    return isStationary;
+  }
+
+  /**
+   * Smooth GPS points using advanced multi-pass filtering to reduce zigzag
+   * 1. Remove outliers (sudden jumps)
+   * 2. Apply Gaussian smoothing (7-point window) - INCREASED from 5
+   * 3. Second pass Gaussian smoothing
+   * 4. Douglas-Peucker simplification to remove unnecessary points
+   * 5. Kalman-like prediction smoothing
+   */
+  private smoothGPSPoints(points: GPSDataPoint[]): GPSDataPoint[] {
+    if (points.length <= 2) {
+      return points; // Not enough points to smooth
+    }
+
+    // Step 1: Remove outliers - points that jump too far from trajectory
+    const filtered = this.removeGPSOutliers(points);
+    
+    if (filtered.length <= 2) {
+      return filtered;
+    }
+
+    // Step 2: First pass - Gaussian smoothing with 7-point window (upgraded from 5)
+    let smoothed = this.applyGaussianSmooth7Point(filtered);
+    
+    // Step 3: Second pass - Gaussian smoothing again for extra smoothness
+    if (smoothed.length > 6) {
+      smoothed = this.applyGaussianSmooth7Point(smoothed);
+    }
+
+    // Step 4: Douglas-Peucker simplification - remove points that don't add curvature
+    smoothed = this.douglasPeuckerSimplify(smoothed, 3); // 3 meter tolerance
+
+    // Step 5: Kalman-like prediction smoothing for final polish
+    smoothed = this.applyPredictiveSmoothing(smoothed);
+
+    logger.debug(
+      `Smoothed GPS: ${points.length} → ${filtered.length} (outliers) → ${smoothed.length} (final)`
+    );
+    
+    return smoothed;
+  }
+
+  /**
+   * Remove GPS outliers - points that deviate too much from expected trajectory
+   */
+  private removeGPSOutliers(points: GPSDataPoint[]): GPSDataPoint[] {
+    if (points.length <= 2) {
+      return points;
+    }
+
+    const result: GPSDataPoint[] = [points[0]]; // Keep first point
+
+    for (let i = 1; i < points.length - 1; i++) {
+      const prev = points[i - 1];
+      const curr = points[i];
+      const next = points[i + 1];
+
+      // Calculate distances
+      const distToPrev = this.calculateDistance(prev, curr);
+      const distToNext = this.calculateDistance(curr, next);
+      const prevToNext = this.calculateDistance(prev, next);
+
+      // Check if current point creates sharp angle (outlier)
+      // If distance(prev->curr->next) >> distance(prev->next), curr is likely outlier
+      const detourRatio = (distToPrev + distToNext) / Math.max(prevToNext, 1);
+
+      // If detour ratio > 2.5, this point is likely GPS spike/outlier
+      if (detourRatio < 2.5) {
+        result.push(curr);
+      } else {
+        logger.debug(`Removed GPS outlier: detour ratio ${detourRatio.toFixed(2)}`);
+      }
+    }
+
+    result.push(points[points.length - 1]); // Keep last point
+    return result;
+  }
+
+  /**
+   * Apply Gaussian smoothing with 7-point window (UPGRADED from 5-point)
+   * Gaussian weights: [0.03, 0.11, 0.22, 0.28, 0.22, 0.11, 0.03]
+   * Stronger smoothing to eliminate zigzag
+   */
+  private applyGaussianSmooth7Point(points: GPSDataPoint[]): GPSDataPoint[] {
+    if (points.length <= 6) {
+      return points;
+    }
+
+    const smoothed: GPSDataPoint[] = [];
+    
+    // Keep first 3 points
+    smoothed.push(points[0]);
+    smoothed.push(points[1]);
+    smoothed.push(points[2]);
+
+    // Gaussian weights for 7-point window (sigma = 1.2)
+    const weights = [0.03, 0.11, 0.22, 0.28, 0.22, 0.11, 0.03];
+
+    // Apply Gaussian smoothing for middle points
+    for (let i = 3; i < points.length - 3; i++) {
+      let lat = 0;
+      let lng = 0;
+
+      // 7-point weighted average
+      for (let j = -3; j <= 3; j++) {
+        const point = points[i + j];
+        const weight = weights[j + 3];
+        lat += point.latitude * weight;
+        lng += point.longitude * weight;
+      }
+
+      smoothed.push({
+        ...points[i],
+        latitude: lat,
+        longitude: lng
+      });
+    }
+
+    // Keep last 3 points
+    smoothed.push(points[points.length - 3]);
+    smoothed.push(points[points.length - 2]);
+    smoothed.push(points[points.length - 1]);
+
+    return smoothed;
+  }
+
+  /**
+   * Douglas-Peucker algorithm to simplify path by removing unnecessary points
+   * Keeps only points that contribute to the shape (reduce zigzag)
+   */
+  private douglasPeuckerSimplify(points: GPSDataPoint[], tolerance: number): GPSDataPoint[] {
+    if (points.length <= 2) {
+      return points;
+    }
+
+    // Find point with maximum distance from line (first to last)
+    let maxDistance = 0;
+    let maxIndex = 0;
+    const first = points[0];
+    const last = points[points.length - 1];
+
+    for (let i = 1; i < points.length - 1; i++) {
+      const distance = this.perpendicularDistance(points[i], first, last);
+      if (distance > maxDistance) {
+        maxDistance = distance;
+        maxIndex = i;
+      }
+    }
+
+    // If max distance is greater than tolerance, recursively simplify
+    if (maxDistance > tolerance) {
+      // Recursive call for both segments
+      const left = this.douglasPeuckerSimplify(points.slice(0, maxIndex + 1), tolerance);
+      const right = this.douglasPeuckerSimplify(points.slice(maxIndex), tolerance);
+      
+      // Combine results (remove duplicate middle point)
+      return [...left.slice(0, -1), ...right];
+    } else {
+      // If all points are within tolerance, just keep first and last
+      return [first, last];
+    }
+  }
+
+  /**
+   * Calculate perpendicular distance from point to line segment
+   */
+  private perpendicularDistance(point: GPSDataPoint, lineStart: GPSDataPoint, lineEnd: GPSDataPoint): number {
+    const x0 = point.latitude;
+    const y0 = point.longitude;
+    const x1 = lineStart.latitude;
+    const y1 = lineStart.longitude;
+    const x2 = lineEnd.latitude;
+    const y2 = lineEnd.longitude;
+
+    const numerator = Math.abs((y2 - y1) * x0 - (x2 - x1) * y0 + x2 * y1 - y2 * x1);
+    const denominator = Math.sqrt(Math.pow(y2 - y1, 2) + Math.pow(x2 - x1, 2));
+    
+    return (numerator / denominator) * 111000; // Convert to meters
+  }
+
+  /**
+   * Apply predictive smoothing (Kalman-like filter)
+   * Uses velocity and heading to predict next position, then blend with actual
+   */
+  private applyPredictiveSmoothing(points: GPSDataPoint[]): GPSDataPoint[] {
+    if (points.length <= 2) {
+      return points;
+    }
+
+    const smoothed: GPSDataPoint[] = [points[0]]; // Keep first point
+
+    for (let i = 1; i < points.length; i++) {
+      const prev = smoothed[i - 1];
+      const curr = points[i];
+
+      if (i === 1) {
+        // No prediction for second point
+        smoothed.push(curr);
+        continue;
+      }
+
+      // Calculate velocity from previous smoothed points
+      const prevPrev = smoothed[i - 2];
+      const latVelocity = prev.latitude - prevPrev.latitude;
+      const lngVelocity = prev.longitude - prevPrev.longitude;
+
+      // Predict next position based on velocity
+      const predictedLat = prev.latitude + latVelocity;
+      const predictedLng = prev.longitude + lngVelocity;
+
+      // Blend prediction with actual measurement (70% prediction, 30% actual)
+      // This smooths out sudden direction changes
+      const blendedLat = predictedLat * 0.7 + curr.latitude * 0.3;
+      const blendedLng = predictedLng * 0.7 + curr.longitude * 0.3;
+
+      smoothed.push({
+        ...curr,
+        latitude: blendedLat,
+        longitude: blendedLng
+      });
+    }
+
+    return smoothed;
+  }
+
+  /**
+   * Apply Gaussian smoothing with 5-point window (LEGACY - keeping for backward compatibility)
+   * Gaussian weights: [0.06, 0.24, 0.40, 0.24, 0.06]
+   */
+  private applyGaussianSmooth(points: GPSDataPoint[]): GPSDataPoint[] {
+    if (points.length <= 4) {
+      return points;
+    }
+
+    const smoothed: GPSDataPoint[] = [];
+    
+    // Keep first 2 points
+    smoothed.push(points[0]);
+    smoothed.push(points[1]);
+
+    // Gaussian weights for 5-point window (sigma = 1.0)
+    const weights = [0.06, 0.24, 0.40, 0.24, 0.06];
+
+    // Apply Gaussian smoothing for middle points
+    for (let i = 2; i < points.length - 2; i++) {
+      let lat = 0;
+      let lng = 0;
+
+      // 5-point weighted average
+      for (let j = -2; j <= 2; j++) {
+        const point = points[i + j];
+        const weight = weights[j + 2];
+        lat += point.latitude * weight;
+        lng += point.longitude * weight;
+      }
+
+      smoothed.push({
+        ...points[i],
+        latitude: lat,
+        longitude: lng
+      });
+    }
+
+    // Keep last 2 points
+    smoothed.push(points[points.length - 2]);
+    smoothed.push(points[points.length - 1]);
+
+    return smoothed;
+  }
+
+  /**
+   * Calculate distance between two GPS points in meters
+   */
+  private calculateDistance(p1: GPSDataPoint, p2: GPSDataPoint): number {
+    const latDiff = (p2.latitude - p1.latitude) * 111000;
+    const lngDiff = (p2.longitude - p1.longitude) * 111000 * Math.cos(p1.latitude * Math.PI / 180);
+    return Math.sqrt(latDiff * latDiff + lngDiff * lngDiff);
+  }
+
+  /**
    * Stream snapped GPS data to dashboard via Socket.IO
-   * Only stream the newest point to avoid redrawing entire path
+   * Stream the FULL snapped path geometry to render accurate curves
    */
   private streamSnappedGPSData(
     deviceId: string, 
@@ -428,41 +938,20 @@ class MQTTService {
     }
   ): void {
     try {
-      // Get only the last point from snapped geometry (newest point)
+      // Get FULL geometry from OSRM (all matched points)
       const geometry = data.snapResult.geometry;
       if (!geometry || !geometry.coordinates || geometry.coordinates.length === 0) {
         logger.warn(`No geometry to stream for ${deviceId}`);
         return;
       }
 
-      const lastCoord = geometry.coordinates[geometry.coordinates.length - 1];
-      const newPoint: [number, number] = [lastCoord[1], lastCoord[0]]; // [lat, lng]
-
-      // Check if this point is significantly different from last streamed point
-      const lastPoint = this.lastStreamedSnappedPoint.get(deviceId);
-      if (lastPoint) {
-        const latDiff = Math.abs(lastPoint[0] - newPoint[0]);
-        const lngDiff = Math.abs(lastPoint[1] - newPoint[1]);
-        
-        // Skip if point is too close to last streamed point (< 8 meters ~ 0.00008 degrees)
-        // Increased from 3m to 8m to reduce zigzag in roundabouts
-        if (latDiff < 0.00008 && lngDiff < 0.00008) {
-          logger.debug(`Skipping duplicate/close point for ${deviceId}`);
-          return;
-        }
-      }
-
-      // Update last streamed point
-      this.lastStreamedSnappedPoint.set(deviceId, newPoint);
-
+      // Send ALL coordinates from OSRM match, not just the last one
+      // This ensures curves, roundabouts, and turns are rendered accurately
       const streamData = {
         device_id: deviceId,
         timestamp: data.timestamp,
         original_points: data.originalPoints,
-        snapped_geometry: {
-          type: 'LineString',
-          coordinates: [lastCoord] // Only send the newest point
-        },
+        snapped_geometry: geometry, // Send FULL geometry with ALL points
         confidence: data.snapResult.confidence,
         distance: data.snapResult.distance,
         duration: data.snapResult.duration,
@@ -476,7 +965,8 @@ class MQTTService {
       // Also emit to device-specific channel
       socketIOServer.emit(`${deviceId}:snapped`, streamData);
 
-      logger.debug(`Streamed snapped GPS point for ${deviceId}: [${newPoint[0].toFixed(6)}, ${newPoint[1].toFixed(6)}]`);
+      const confidence = data.snapResult.confidence || 0;
+      logger.debug(`Streamed snapped GPS for ${deviceId}: ${geometry.coordinates.length} points, confidence=${(confidence * 100).toFixed(1)}%`);
 
     } catch (error) {
       logger.error('Error streaming snapped GPS data:', error);
