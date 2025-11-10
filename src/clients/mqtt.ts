@@ -2,6 +2,7 @@ import mqtt, { MqttClient } from 'mqtt';
 import { config } from '../config';
 import { logger } from '../utils/logger';
 import { EdgeEvent, GPSDataPayload, GPSDataPoint, DriverRequestPayload, DriverInfoPayload, DriverCheckInPayload, CheckOutConfirmRequestPayload, CheckOutConfirmResponsePayload, DriverCheckOutPayload, ParkingStateEvent, DrivingTimeEvent, VehicleOperationManagerEvent } from '../types';
+import { GpsPoint, SnapResultData } from '../types/tracking';
 import { redisClient } from './redis';
 import { timescaleDB } from './timescaledb';
 import { socketIOServer } from '../server/socketio';
@@ -9,6 +10,7 @@ import { driverService } from '../services/driverService';
 import { tripService } from '../services/tripService';
 import { eventLogService } from '../services/eventLogService';
 import { CacheKeys, VehicleState } from '../utils/constants';
+import { osrmClient } from './osrm_client';
 
 class MQTTService {
   private client: MqttClient | null = null;
@@ -17,6 +19,14 @@ class MQTTService {
   private batchTimeout = 5000; // 5 seconds
   private batchTimer: NodeJS.Timeout | null = null;
   private ttlGPSCache = 30; // 30 seconds
+
+  // GPS Buffer for snap-to-road
+  private gpsBuffers: Map<string, GPSDataPoint[]> = new Map();
+  private gpsBufferSize = 10; // Increase for better roundabout handling
+  private gpsBufferTimeout = 5000; // 5 seconds to allow more points to accumulate
+  private gpsBufferTimers: Map<string, NodeJS.Timeout> = new Map();
+  private minConfidenceThreshold = 0.6; // 60% minimum confidence
+  private lastStreamedSnappedPoint: Map<string, [number, number]> = new Map(); // Track last streamed point per device
 
   /**
    * Connect to MQTT broker
@@ -160,15 +170,163 @@ class MQTTService {
     try {
       logger.debug(`Received GPS data from device: ${deviceId}, points: ${payload.gps_data.length}`);
 
-      // Process GPS data in parallel
+      // Add GPS points to buffer
+      this.addToGPSBuffer(deviceId, payload.gps_data);
+
+      // Process GPS data in parallel - cache and stream raw data
       await Promise.allSettled([
         this.cacheGPSData(deviceId, payload),
-        this.streamGPSData(deviceId, payload),
+        this.streamRawGPSData(deviceId, payload),
         this.storeGPSData(deviceId, payload),
       ]);
 
     } catch (error) {
       logger.error('Error handling GPS data:', error);
+    }
+  }
+
+  /**
+   * Add GPS points to buffer for snap-to-road processing
+   */
+  private addToGPSBuffer(deviceId: string, points: GPSDataPoint[]): void {
+    try {
+      // Get or create buffer for this device
+      let buffer = this.gpsBuffers.get(deviceId);
+      if (!buffer) {
+        buffer = [];
+        this.gpsBuffers.set(deviceId, buffer);
+      }
+
+      // Filter out low accuracy points (accuracy > 50m = unreliable)
+      const filteredPoints = points.filter(point => {
+        if (point.accuracy > 60) {
+          logger.warn(`Filtering out low accuracy GPS point (${point.accuracy}m) for ${deviceId}`);
+          return false;
+        }
+        return true;
+      });
+
+      if (filteredPoints.length === 0) {
+        logger.debug(`All GPS points filtered out for ${deviceId} due to low accuracy`);
+        return;
+      }
+
+      // Add filtered points to buffer
+      buffer.push(...filteredPoints);
+
+      logger.debug(`GPS buffer for ${deviceId}: ${buffer.length} points (${filteredPoints.length} added)`);
+
+      // Check if we should trigger snap-to-road
+      if (buffer.length >= this.gpsBufferSize) {
+        // Buffer is full, trigger snap immediately
+        this.triggerSnapToRoad(deviceId);
+      } else {
+        // Set/reset timeout for this device
+        this.resetGPSBufferTimeout(deviceId);
+      }
+
+    } catch (error) {
+      logger.error('Error adding to GPS buffer:', error);
+    }
+  }
+
+  /**
+   * Reset GPS buffer timeout for a device
+   */
+  private resetGPSBufferTimeout(deviceId: string): void {
+    // Clear existing timeout
+    const existingTimer = this.gpsBufferTimers.get(deviceId);
+    if (existingTimer) {
+      clearTimeout(existingTimer);
+    }
+
+    // Set new timeout
+    const timer = setTimeout(() => {
+      this.triggerSnapToRoad(deviceId);
+    }, this.gpsBufferTimeout);
+
+    this.gpsBufferTimers.set(deviceId, timer);
+  }
+
+  /**
+   * Trigger snap-to-road processing for a device
+   */
+  private async triggerSnapToRoad(deviceId: string): Promise<void> {
+    try {
+      const buffer = this.gpsBuffers.get(deviceId);
+      if (!buffer || buffer.length < 2) {
+        logger.debug(`Not enough GPS points for snapping (${deviceId}): ${buffer?.length || 0}`);
+        return;
+      }
+
+      logger.info(`Triggering snap-to-road for ${deviceId} with ${buffer.length} points`);
+
+      // Clear timeout
+      const timer = this.gpsBufferTimers.get(deviceId);
+      if (timer) {
+        clearTimeout(timer);
+        this.gpsBufferTimers.delete(deviceId);
+      }
+
+      // Convert GPSDataPoint to GpsPoint format for OSRM
+      const gpsPoints: GpsPoint[] = buffer.map(point => ({
+        latitude: point.latitude,
+        longitude: point.longitude,
+        speed: point.speed,
+        accuracy: point.accuracy,
+        timestamp: point.gps_timestamp,
+      }));
+
+      // Call OSRM snap-to-road
+      const snapResult = await osrmClient.snapToRoad(gpsPoints);
+
+      if (snapResult.success && snapResult.geometry) {
+        const confidence = snapResult.confidence || 0;
+        logger.info(
+          `Snap-to-road success for ${deviceId}: ` +
+          `confidence=${(confidence * 100).toFixed(1)}%, ` +
+          `${snapResult.originalPointsCount}→${snapResult.snappedPointsCount} points`
+        );
+
+        // Check confidence threshold (lowered to 40%)
+        if (confidence < this.minConfidenceThreshold) {
+          logger.warn(`Low confidence (${(confidence * 100).toFixed(1)}%) for ${deviceId}. Keeping 15 points and waiting for more...`);
+          
+          // Keep only the most recent 15 points (half of buffer) for context
+          const halfBuffer = buffer.slice(-15);
+          this.gpsBuffers.set(deviceId, halfBuffer);
+          
+          // Set timeout to trigger again with more points
+          this.resetGPSBufferTimeout(deviceId);
+          return;
+        }
+
+        // Good confidence - stream snapped data to Socket.IO
+        this.streamSnappedGPSData(deviceId, {
+          originalPoints: buffer,
+          snapResult: snapResult,
+          timestamp: Date.now(),
+        });
+
+        // Clear buffer after successful processing
+        this.gpsBuffers.set(deviceId, []);
+      } else {
+        logger.warn(`Snap-to-road failed for ${deviceId}: ${snapResult.error}`);
+        
+        // Keep some points for next attempt instead of clearing completely
+        if (buffer.length > 10) {
+          const keepPoints = buffer.slice(-10);
+          this.gpsBuffers.set(deviceId, keepPoints);
+          logger.debug(`Kept last 10 points for next snap attempt`);
+        } else {
+          this.gpsBuffers.set(deviceId, []);
+        }
+      }
+
+    } catch (error) {
+      logger.error('Error in snap-to-road processing:', error);
+      // Clear buffer on error
+      this.gpsBuffers.set(deviceId, []);
     }
   }
 
@@ -194,9 +352,9 @@ class MQTTService {
   }
 
   /**
-   * Stream GPS data to dashboard via Socket.IO
+   * Stream raw GPS data to dashboard via Socket.IO
    */
-  private streamGPSData(deviceId: string, payload: GPSDataPayload): void {
+  private streamRawGPSData(deviceId: string, payload: GPSDataPayload): void {
     try {
       // Get the latest GPS data point (last item in the array)
       const latestGPSPoint = payload.gps_data[payload.gps_data.length - 1];
@@ -214,9 +372,80 @@ class MQTTService {
 
         // Also emit to generic GPS channel for monitoring all devices
         socketIOServer.emit('gps:all', streamData);
+
+        // Emit raw GPS data
+        socketIOServer.emit('gps:raw', streamData);
       }
     } catch (error) {
-      logger.error('Error streaming GPS data:', error);
+      logger.error('Error streaming raw GPS data:', error);
+    }
+  }
+
+  /**
+   * Stream snapped GPS data to dashboard via Socket.IO
+   * Only stream the newest point to avoid redrawing entire path
+   */
+  private streamSnappedGPSData(
+    deviceId: string, 
+    data: {
+      originalPoints: GPSDataPoint[];
+      snapResult: SnapResultData;
+      timestamp: number;
+    }
+  ): void {
+    try {
+      // Get only the last point from snapped geometry (newest point)
+      const geometry = data.snapResult.geometry;
+      if (!geometry || !geometry.coordinates || geometry.coordinates.length === 0) {
+        logger.warn(`No geometry to stream for ${deviceId}`);
+        return;
+      }
+
+      const lastCoord = geometry.coordinates[geometry.coordinates.length - 1];
+      const newPoint: [number, number] = [lastCoord[1], lastCoord[0]]; // [lat, lng]
+
+      // Check if this point is significantly different from last streamed point
+      const lastPoint = this.lastStreamedSnappedPoint.get(deviceId);
+      if (lastPoint) {
+        const latDiff = Math.abs(lastPoint[0] - newPoint[0]);
+        const lngDiff = Math.abs(lastPoint[1] - newPoint[1]);
+        
+        // Skip if point is too close to last streamed point (< 8 meters ~ 0.00008 degrees)
+        // Increased from 3m to 8m to reduce zigzag in roundabouts
+        if (latDiff < 0.00008 && lngDiff < 0.00008) {
+          logger.debug(`Skipping duplicate/close point for ${deviceId}`);
+          return;
+        }
+      }
+
+      // Update last streamed point
+      this.lastStreamedSnappedPoint.set(deviceId, newPoint);
+
+      const streamData = {
+        device_id: deviceId,
+        timestamp: data.timestamp,
+        original_points: data.originalPoints,
+        snapped_geometry: {
+          type: 'LineString',
+          coordinates: [lastCoord] // Only send the newest point
+        },
+        confidence: data.snapResult.confidence,
+        distance: data.snapResult.distance,
+        duration: data.snapResult.duration,
+        original_count: data.snapResult.originalPointsCount,
+        snapped_count: data.snapResult.snappedPointsCount,
+      };
+
+      // Emit snapped GPS data to dashboard
+      socketIOServer.emit('gps:snapped', streamData);
+
+      // Also emit to device-specific channel
+      socketIOServer.emit(`${deviceId}:snapped`, streamData);
+
+      logger.debug(`Streamed snapped GPS point for ${deviceId}: [${newPoint[0].toFixed(6)}, ${newPoint[1].toFixed(6)}]`);
+
+    } catch (error) {
+      logger.error('Error streaming snapped GPS data:', error);
     }
   }
 
@@ -1094,15 +1323,23 @@ class MQTTService {
     }
   }
 
-  /**
+    /**
    * Disconnect MQTT client
    */
   disconnect(): void {
     if (this.client) {
-      this.flushBatch(); // Flush remaining events
       this.client.end();
+      this.client = null;
       logger.info('MQTT client disconnected');
     }
+
+    // Clear GPS buffer timers
+    for (const [deviceId, timer] of this.gpsBufferTimers.entries()) {
+      clearTimeout(timer);
+      logger.debug(`Cleared GPS buffer timer for ${deviceId}`);
+    }
+    this.gpsBufferTimers.clear();
+    this.gpsBuffers.clear();
   }
 }
 

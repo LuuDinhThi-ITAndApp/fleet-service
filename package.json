@@ -15,7 +15,8 @@
     "test": "echo \"No tests yet\" && exit 0",
     "docker:build": "docker build -t mqtt-gps-collector:latest .",
     "docker:run": "docker run -d --name mqtt-gps-collector -p 3000:3000 --env-file .env mqtt-gps-collector:latest",
-    "docker:stop": "docker stop mqtt-gps-collector && docker rm mqtt-gps-collector"
+    "docker:stop": "docker stop mqtt-gps-collector && docker rm mqtt-gps-collector",
+    "dashboard": "node scripts/serve-dashboard.js"
   },
   "keywords": ["mqtt", "redis", "timescaledb", "socketio", "iot", "gps", "telemetry"],
   "author": "",

@@ -35,7 +35,7 @@ export const config = {
   },
   socketio: {
     port: parseInt(process.env.SOCKETIO_PORT || '3000'),
-    corsOrigin: process.env.SOCKETIO_CORS_ORIGIN || 'http://localhost:5173',
+    corsOrigin: process.env.SOCKETIO_CORS_ORIGIN || '*', // Allow all origins for development
   },
   log: {
     level: process.env.LOG_LEVEL || 'info',
