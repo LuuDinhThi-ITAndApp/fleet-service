@@ -306,18 +306,28 @@ class MQTTService {
 
       if (snapResult.success && snapResult.geometry) {
         const confidence = snapResult.confidence || 0;
+        const snappedCount = snapResult.snappedPointsCount || 0;
+        
         logger.info(
           `Snap-to-road success for ${deviceId}: ` +
           `confidence=${(confidence * 100).toFixed(1)}%, ` +
-          `${snapResult.originalPointsCount}→${snapResult.snappedPointsCount} points`
+          `${snapResult.originalPointsCount}→${snappedCount} points`
         );
+
+        // Warn if too few snapped points (geometry simplified too much)
+        if (snappedCount < snapResult.originalPointsCount / 2) {
+          logger.warn(
+            `⚠️ OSRM simplified geometry too much for ${deviceId}: ` +
+            `${snapResult.originalPointsCount} → ${snappedCount} points. May cause straight lines!`
+          );
+        }
 
         // Check confidence threshold (lowered to 40%)
         if (confidence < this.minConfidenceThreshold) {
-          logger.warn(`Low confidence (${(confidence * 100).toFixed(1)}%) for ${deviceId}. Keeping 15 points and waiting for more...`);
+          logger.warn(`Low confidence (${(confidence * 100).toFixed(1)}%) for ${deviceId}. Keeping half buffer and waiting for more...`);
           
-          // Keep only the most recent 15 points (half of buffer) for context
-          const halfBuffer = buffer.slice(-15);
+          // Keep only the most recent half of buffer for context
+          const halfBuffer = buffer.slice(-Math.ceil(buffer.length / 2));
           this.gpsBuffers.set(deviceId, halfBuffer);
           
           // Set timeout to trigger again with more points

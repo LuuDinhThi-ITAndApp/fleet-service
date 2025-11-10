@@ -83,12 +83,13 @@ class OsrmClient implements IOsrmClient {
         try {
           const response = await this.client.get<OsrmMatchResponse>(url, {
             params: {
-              overview: 'full',
-              geometries: 'geojson',
+              overview: 'full',        // CRITICAL: Full geometry, not simplified
+              geometries: 'geojson',   // Return GeoJSON format
               radiuses: radiuses,
               gaps: 'split',
               tidy: 'true',
-              annotations: 'false', // Disable to reduce response size
+              steps: 'true',           // Include turn-by-turn steps for full detail
+              annotations: 'false',    // Disable to reduce response size
             },
           });
 
@@ -99,6 +100,14 @@ class OsrmClient implements IOsrmClient {
           if (result.code === 'Ok' && result.matchings && result.matchings.length > 0) {
             const matching = result.matchings[0];
             const snappedCount = matching.geometry.coordinates.length;
+
+            // Warn if OSRM simplified too much
+            if (snappedCount < points.length / 2) {
+              console.warn(
+                `[OSRM] ⚠️ Geometry simplified: ${points.length} input points → ${snappedCount} output points. ` +
+                `This may cause straight lines in curves!`
+              );
+            }
 
             console.log(
               `[OSRM] ✅ Success in ${elapsed}ms (attempt ${attempt + 1}): ` +

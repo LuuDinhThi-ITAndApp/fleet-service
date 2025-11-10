@@ -452,73 +452,78 @@
         lastSnappedCoords[data.device_id] = null;
       }
       
-      // Decimation: Only add point if it's significantly different from last point
-      // Reduce threshold to keep more points for accuracy
+      // Add ALL points from snapped geometry, not just the last one
+      // This ensures we render the full OSRM matched path including all intermediate points
       if (snappedCoords.length > 0) {
-        const newPoint = snappedCoords[snappedCoords.length - 1];
-        const lastPoint = lastSnappedCoords[data.device_id];
-        
-        // Distance threshold: 5 meters (reduced from 10m to keep more detail)
-        const shouldAddPoint = !lastPoint || 
-            map.distance(lastPoint, newPoint) > 5;
-        
-        if (shouldAddPoint) {
-          snappedPaths[data.device_id].addLatLng(newPoint);
-          lastSnappedCoords[data.device_id] = newPoint;
+        for (const newPoint of snappedCoords) {
+          const lastPoint = lastSnappedCoords[data.device_id];
           
-          // Update marker position to snapped location (smooth on road)
-          if (deviceMarkers[data.device_id]) {
-            const currentPos = deviceMarkers[data.device_id].getLatLng();
-            let heading = deviceLastHeading[data.device_id] || 0;
+          // Distance threshold: 5 meters (reduced from 10m to keep more detail)
+          const shouldAddPoint = !lastPoint || 
+              map.distance(lastPoint, newPoint) > 5;
+          
+          if (shouldAddPoint) {
+            snappedPaths[data.device_id].addLatLng(newPoint);
+            lastSnappedCoords[data.device_id] = newPoint;
+          }
+        }
+        
+        // Use last point for marker update
+        const lastSnappedPoint = snappedCoords[snappedCoords.length - 1];
+        
+        // Update marker position to snapped location (smooth on road)
+        if (deviceMarkers[data.device_id]) {
+          const currentPos = deviceMarkers[data.device_id].getLatLng();
+          let heading = deviceLastHeading[data.device_id] || 0;
+          
+          // Calculate heading from movement on snapped path
+          const distance = map.distance(currentPos, lastSnappedPoint);
+          
+          // Get speed from original GPS data to detect roundabouts (low speed)
+          const currentSpeed = data.original_points && data.original_points.length > 0 
+            ? data.original_points[data.original_points.length - 1].speed * 3.6 
+            : 0;
+          
+          // Adaptive update threshold based on speed
+          // Reduce thresholds to update more frequently
+          const updateThreshold = currentSpeed < 20 ? 5 : 3;
+          
+          // Only update marker if moved significant distance
+          if (distance > updateThreshold) {
+            const newHeading = calculateHeading(currentPos.lat, currentPos.lng, lastSnappedPoint[0], lastSnappedPoint[1]);
             
-            // Calculate heading from movement on snapped path
-            const distance = map.distance(currentPos, newPoint);
+            // Smooth heading change - avoid sudden jumps
+            const headingDiff = ((newHeading - heading + 540) % 360) - 180;
             
-            // Get speed from original GPS data to detect roundabouts (low speed)
-            const currentSpeed = data.original_points && data.original_points.length > 0 
-              ? data.original_points[data.original_points.length - 1].speed * 3.6 
-              : 0;
+            // Progressive heading update for smooth rotation
+            // Less aggressive smoothing for better responsiveness
+            const smoothFactor = currentSpeed < 20 ? 0.6 : 0.8; // 60% for roundabouts, 80% for normal
             
-            // Adaptive update threshold based on speed
-            // Reduce thresholds to update more frequently
-            const updateThreshold = currentSpeed < 20 ? 5 : 3;
-            
-            // Only update marker if moved significant distance
-            if (distance > updateThreshold) {
-              const newHeading = calculateHeading(currentPos.lat, currentPos.lng, newPoint[0], newPoint[1]);
-              
-              // Smooth heading change - avoid sudden jumps
-              const headingDiff = ((newHeading - heading + 540) % 360) - 180;
-              
-              // Progressive heading update for smooth rotation
-              // Less aggressive smoothing for better responsiveness
-              const smoothFactor = currentSpeed < 20 ? 0.6 : 0.8; // 60% for roundabouts, 80% for normal
-              
-              if (Math.abs(headingDiff) < 120) { // Allow larger heading changes
-                heading = heading + headingDiff * smoothFactor;
-                heading = (heading + 360) % 360; // Normalize to 0-360
-                deviceLastHeading[data.device_id] = heading;
-              }
-              
-              // Update marker with snapped position
-              const carIcon = createCarIcon(colors.snapped, heading);
-              deviceMarkers[data.device_id].setIcon(carIcon);
-              deviceMarkers[data.device_id].setLatLng(newPoint);
+            if (Math.abs(headingDiff) < 120) { // Allow larger heading changes
+              heading = heading + headingDiff * smoothFactor;
+              heading = (heading + 360) % 360; // Normalize to 0-360
+              deviceLastHeading[data.device_id] = heading;
             }
             
-            // Check confidence level
-            const confidence = data.confidence || 0;
-            const confidencePercent = (confidence * 100).toFixed(1);
-            const isLowConfidence = confidence < 0.5; // Match backend threshold of 50%
-            
-            const confidenceLabel = isLowConfidence 
-              ? `<span style="color: orange; font-weight: bold;">⚠️ ${confidencePercent}% (Low)</span>`
-              : `<span style="color: green;">${confidencePercent}%</span>`;
-            
-            deviceMarkers[data.device_id].setPopupContent(
-              `<b>Device:</b> ${data.device_id}<br>` +
-              `<b>Speed:</b> ${currentSpeed.toFixed(1)} km/h<br>` +
-              `<b>Heading:</b> ${heading.toFixed(0)}°<br>` +
+            // Update marker with snapped position
+            const carIcon = createCarIcon(colors.snapped, heading);
+            deviceMarkers[data.device_id].setIcon(carIcon);
+            deviceMarkers[data.device_id].setLatLng(lastSnappedPoint);
+          }
+          
+          // Check confidence level
+          const confidence = data.confidence || 0;
+          const confidencePercent = (confidence * 100).toFixed(1);
+          const isLowConfidence = confidence < 0.5; // Match backend threshold of 50%
+          
+          const confidenceLabel = isLowConfidence 
+            ? `<span style="color: orange; font-weight: bold;">⚠️ ${confidencePercent}% (Low)</span>`
+            : `<span style="color: green;">${confidencePercent}%</span>`;
+          
+          deviceMarkers[data.device_id].setPopupContent(
+            `<b>Device:</b> ${data.device_id}<br>` +
+            `<b>Speed:</b> ${currentSpeed.toFixed(1)} km/h<br>` +
+            `<b>Heading:</b> ${heading.toFixed(0)}°<br>` +
               `<b>Confidence:</b> ${confidenceLabel}<br>` +
               `<b>Points:</b> ${data.original_count}→${data.snapped_count}`
             );
