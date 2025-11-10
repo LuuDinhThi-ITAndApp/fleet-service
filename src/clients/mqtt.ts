@@ -464,6 +464,27 @@ class MQTTService {
           return;
         }
 
+        // Validation 4: Check perpendicular deviation (NEW - most important!)
+        // Calculate average perpendicular distance of raw GPS points from snapped path
+        const avgPerpendicularDeviation = this.calculateAveragePerpendicularDeviation(
+          gpsPoints,
+          snappedCoords
+        );
+        
+        // If raw GPS points deviate more than 15m perpendicular from snapped path,
+        // likely matched to parallel road (e.g., bridge vs ground level road)
+        if (avgPerpendicularDeviation > 15) {
+          logger.warn(
+            `⚠️ High perpendicular deviation for ${deviceId}: ` +
+            `avgDeviation=${avgPerpendicularDeviation.toFixed(1)}m. ` +
+            `Raw GPS appears to be on different road (e.g., bridge vs ground) - using raw GPS.`
+          );
+          
+          this.streamRawGPSAsPath(deviceId, buffer);
+          this.gpsBuffers.set(deviceId, []);
+          return;
+        }
+
         // Good confidence and reasonable distance - stream snapped data to Socket.IO
         this.streamSnappedGPSData(deviceId, {
           originalPoints: buffer,
@@ -922,6 +943,102 @@ class MQTTService {
   private calculateDistance(p1: GPSDataPoint, p2: GPSDataPoint): number {
     const latDiff = (p2.latitude - p1.latitude) * 111000;
     const lngDiff = (p2.longitude - p1.longitude) * 111000 * Math.cos(p1.latitude * Math.PI / 180);
+    return Math.sqrt(latDiff * latDiff + lngDiff * lngDiff);
+  }
+
+  /**
+   * Calculate average perpendicular deviation of raw GPS points from snapped path
+   * This detects when raw GPS is on a different road (e.g., bridge vs ground level)
+   */
+  private calculateAveragePerpendicularDeviation(
+    rawPoints: GpsPoint[],
+    snappedCoords: number[][]
+  ): number {
+    if (rawPoints.length === 0 || snappedCoords.length < 2) {
+      return 0;
+    }
+
+    let totalDeviation = 0;
+    let count = 0;
+
+    // For each raw GPS point, find closest snapped path segment and calculate perpendicular distance
+    for (const rawPoint of rawPoints) {
+      let minDistance = Infinity;
+
+      // Check distance to each segment of snapped path
+      for (let i = 0; i < snappedCoords.length - 1; i++) {
+        const segStart = snappedCoords[i];
+        const segEnd = snappedCoords[i + 1];
+
+        // Convert to comparable format
+        const point = {
+          latitude: rawPoint.latitude,
+          longitude: rawPoint.longitude,
+          speed: 0,
+          accuracy: 0,
+          gps_timestamp: 0
+        };
+        const start = {
+          latitude: segStart[1],
+          longitude: segStart[0],
+          speed: 0,
+          accuracy: 0,
+          gps_timestamp: 0
+        };
+        const end = {
+          latitude: segEnd[1],
+          longitude: segEnd[0],
+          speed: 0,
+          accuracy: 0,
+          gps_timestamp: 0
+        };
+
+        const distance = this.perpendicularDistanceToSegment(point, start, end);
+        minDistance = Math.min(minDistance, distance);
+      }
+
+      totalDeviation += minDistance;
+      count++;
+    }
+
+    return count > 0 ? totalDeviation / count : 0;
+  }
+
+  /**
+   * Calculate perpendicular distance from point to line segment (not infinite line)
+   */
+  private perpendicularDistanceToSegment(
+    point: GPSDataPoint,
+    segStart: GPSDataPoint,
+    segEnd: GPSDataPoint
+  ): number {
+    const x0 = point.latitude;
+    const y0 = point.longitude;
+    const x1 = segStart.latitude;
+    const y1 = segStart.longitude;
+    const x2 = segEnd.latitude;
+    const y2 = segEnd.longitude;
+
+    const dx = x2 - x1;
+    const dy = y2 - y1;
+    const segmentLength = Math.sqrt(dx * dx + dy * dy);
+
+    if (segmentLength === 0) {
+      // Segment is a point
+      return Math.sqrt(Math.pow(x0 - x1, 2) + Math.pow(y0 - y1, 2)) * 111000;
+    }
+
+    // Calculate projection of point onto line
+    const t = Math.max(0, Math.min(1, ((x0 - x1) * dx + (y0 - y1) * dy) / (segmentLength * segmentLength)));
+    
+    // Find closest point on segment
+    const closestX = x1 + t * dx;
+    const closestY = y1 + t * dy;
+
+    // Calculate distance
+    const latDiff = (x0 - closestX) * 111000;
+    const lngDiff = (y0 - closestY) * 111000 * Math.cos(x0 * Math.PI / 180);
+    
     return Math.sqrt(latDiff * latDiff + lngDiff * lngDiff);
   }
 
