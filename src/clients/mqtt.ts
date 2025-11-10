@@ -23,7 +23,7 @@ class MQTTService {
   // GPS Buffer for snap-to-road
   private gpsBuffers: Map<string, GPSDataPoint[]> = new Map();
   private gpsBufferSize = 10; // Increase for better roundabout handling
-  private gpsBufferTimeout = 5000; // 5 seconds to allow more points to accumulate
+  private gpsBufferTimeout = 20000; // 20 seconds to allow more points to accumulate
   private gpsBufferTimers: Map<string, NodeJS.Timeout> = new Map();
   private minConfidenceThreshold = 0.6; // 60% minimum confidence
   private lastStreamedSnappedPoint: Map<string, [number, number]> = new Map(); // Track last streamed point per device
