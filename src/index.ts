@@ -3,6 +3,7 @@ import { redisClient } from './clients/redis';
 import { timescaleDB } from './clients/timescaledb';
 import { mqttService } from './clients/mqtt';
 import { socketIOServer } from './server/socketio';
+import { minioClient } from './clients/minio';
 
 /**
  * Initialize all services
@@ -18,6 +19,10 @@ async function initialize() {
     // Initialize TimescaleDB
     logger.info('Initializing TimescaleDB...');
     // await timescaleDB.initialize();
+
+    // Initialize MinIO
+    logger.info('Initializing MinIO...');
+    await minioClient.initialize();
 
     // Start Socket.IO server
     logger.info('Starting Socket.IO server...');

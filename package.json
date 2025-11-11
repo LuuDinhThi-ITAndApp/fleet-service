@@ -18,7 +18,15 @@
     "docker:stop": "docker stop mqtt-gps-collector && docker rm mqtt-gps-collector",
     "dashboard": "node scripts/serve-dashboard.js"
   },
-  "keywords": ["mqtt", "redis", "timescaledb", "socketio", "iot", "gps", "telemetry"],
+  "keywords": [
+    "mqtt",
+    "redis",
+    "timescaledb",
+    "socketio",
+    "iot",
+    "gps",
+    "telemetry"
+  ],
   "author": "",
   "license": "MIT",
   "engines": {
@@ -26,14 +34,15 @@
     "npm": ">=9.0.0"
   },
   "dependencies": {
-    "mqtt": "^5.3.5",
-    "socket.io": "^4.6.1",
-    "redis": "^4.6.13",
-    "pg": "^8.11.3",
+    "axios": "^1.6.0",
     "dotenv": "^16.4.5",
     "express": "^4.18.2",
-    "winston": "^3.11.0",
-    "axios": "^1.6.0"
+    "minio": "^8.0.6",
+    "mqtt": "^5.3.5",
+    "pg": "^8.11.3",
+    "redis": "^4.6.13",
+    "socket.io": "^4.6.1",
+    "winston": "^3.11.0"
   },
   "devDependencies": {
     "@types/express": "^4.17.21",
@@ -42,8 +51,8 @@
     "@typescript-eslint/eslint-plugin": "^6.21.0",
     "@typescript-eslint/parser": "^6.21.0",
     "eslint": "^8.56.0",
-    "typescript": "^5.3.3",
     "ts-node": "^10.9.2",
-    "ts-node-dev": "^2.0.0"
+    "ts-node-dev": "^2.0.0",
+    "typescript": "^5.3.3"
   }
 }

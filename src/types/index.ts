@@ -183,3 +183,25 @@ export interface VehicleOperationManagerEvent {
     speed_limit_violate: number; // in km/h
   };
 }
+
+// DMS (Driver Monitoring System) Types
+export interface DMSViolationInfo {
+  gps_timestamp: number;
+  latitude: number;
+  longitude: number;
+  speed: number;
+  behavior_violate: string;
+  image_data: string; // Binary/base64 encoded image data in JPEG format
+}
+
+export interface DMSDriverInformation {
+  driver_name: string;
+  driver_license_number: string;
+}
+
+export interface DMSPayload {
+  time_stamp: number;
+  message_id: string;
+  info_violate: DMSViolationInfo;
+  driver_information: DMSDriverInformation;
+}

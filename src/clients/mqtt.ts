@@ -1,11 +1,12 @@
 import mqtt, { MqttClient } from 'mqtt';
 import { config } from '../config';
 import { logger } from '../utils/logger';
-import { EdgeEvent, GPSDataPayload, GPSDataPoint, DriverRequestPayload, DriverInfoPayload, DriverCheckInPayload, CheckOutConfirmRequestPayload, CheckOutConfirmResponsePayload, DriverCheckOutPayload, ParkingStateEvent, DrivingTimeEvent, VehicleOperationManagerEvent } from '../types';
+import { EdgeEvent, GPSDataPayload, GPSDataPoint, DriverRequestPayload, DriverInfoPayload, DriverCheckInPayload, CheckOutConfirmRequestPayload, CheckOutConfirmResponsePayload, DriverCheckOutPayload, ParkingStateEvent, DrivingTimeEvent, VehicleOperationManagerEvent, DMSPayload } from '../types';
 import { GpsPoint, SnapResultData } from '../types/tracking';
 import { redisClient } from './redis';
 import { timescaleDB } from './timescaledb';
 import { socketIOServer } from '../server/socketio';
+import { minioClient } from './minio';
 import { driverService } from '../services/driverService';
 import { tripService } from '../services/tripService';
 import { eventLogService } from '../services/eventLogService';
@@ -80,6 +81,7 @@ class MQTTService {
       config.mqtt.topics.parkingState,
       config.mqtt.topics.drivingTime,
       config.mqtt.topics.vehicleOperationManager,
+      config.mqtt.topics.dms,
     ];
 
     topics.forEach(topic => {
@@ -135,6 +137,10 @@ class MQTTService {
       // Check if this is a vehicle operation manager message
       else if (topic.includes('driving_session/vehicle_operation_manager')) {
         await this.handleVehicleOperationManager(deviceId, message as VehicleOperationManagerEvent);
+      }
+      // Check if this is a DMS (Driver Monitoring System) message
+      else if (topic.includes('/DMS')) {
+        await this.handleDMS(deviceId, message as DMSPayload);
       }
       else {
         // Handle generic event
@@ -2099,6 +2105,129 @@ class MQTTService {
 
     } catch (error) {
       logger.error('Error handling vehicle operation manager:', error);
+    }
+  }
+
+  /**
+   * Handle DMS (Driver Monitoring System) messages
+   * Processes driver behavior violations with location and image data
+   */
+  private async handleDMS(deviceId: string, payload: DMSPayload): Promise<void> {
+    try {
+      logger.info(`Received DMS data from device: ${deviceId}`);
+
+      const violationInfo = payload.info_violate;
+      const driverInfo = payload.driver_information;
+
+      logger.info(`DMS Violation - Driver: ${driverInfo.driver_name} (${driverInfo.driver_license_number})`);
+      logger.info(`Behavior: ${violationInfo.behavior_violate}, Speed: ${violationInfo.speed} km/h`);
+      logger.info(`Location: ${violationInfo.latitude}, ${violationInfo.longitude}`);
+
+      // Upload image to MinIO (fleet-snapshots bucket, no subfolder)
+      let imageUrl = '';
+      try {
+        if (violationInfo.image_data && violationInfo.image_data !== 'None') {
+          // Generate unique filename without subfolder: device_behavior_timestamp.png
+          const behaviorSlug = violationInfo.behavior_violate.toLowerCase().replace(/\s+/g, '_');
+          const fileName = `${deviceId}_${behaviorSlug}_${payload.time_stamp}.png`;
+
+          // Upload to MinIO
+          imageUrl = await minioClient.uploadImageFromBase64(
+            violationInfo.image_data,
+            fileName,
+            'image/png'
+          );
+
+          logger.info(`DMS image uploaded to MinIO: ${imageUrl}`);
+        }
+      } catch (uploadError) {
+        logger.error('Error uploading DMS image to MinIO:', uploadError);
+        // Continue processing even if image upload fails
+      }
+
+      // TODO: Map deviceId to vehicleId (UUID from API)
+      const vehicleId = "770e8400-e29b-41d4-a716-446655440002";
+
+      // Get latest trip
+      const latestTrip = await tripService.getLatestTrip(vehicleId);
+
+      if (!latestTrip) {
+        logger.info(`No active trip found for vehicle ${vehicleId}. Logging DMS event without trip.`);
+      }
+
+      // Convert Unix milliseconds to UTC+7
+      const timestampMs = payload.time_stamp + (7 * 60 * 60 * 1000);
+      const timestamp = new Date(timestampMs).toISOString();
+
+      const gpsTimestampMs = violationInfo.gps_timestamp + (7 * 60 * 60 * 1000);
+      const gpsTimestamp = new Date(gpsTimestampMs).toISOString();
+
+      // Log DMS violation event with image URL
+      const eventId = `dms_${deviceId}_${payload.message_id}`;
+      await eventLogService.logDMSEvent(
+        eventId,
+        vehicleId,
+        {
+          timestamp,
+          messageId: payload.message_id,
+          behaviorViolate: violationInfo.behavior_violate,
+          speed: violationInfo.speed,
+          location: {
+            latitude: violationInfo.latitude,
+            longitude: violationInfo.longitude,
+            gpsTimestamp,
+          },
+          imageUrl: imageUrl, // Send MinIO URL instead of base64
+          driverName: driverInfo.driver_name,
+          driverLicenseNumber: driverInfo.driver_license_number,
+        },
+        latestTrip?.id
+      );
+
+      logger.info(`DMS violation logged: ${violationInfo.behavior_violate}`);
+
+      // Count total DMS violations in this session
+      let dmsViolationCount = 0;
+      if (latestTrip) {
+        dmsViolationCount = await eventLogService.countDMSViolationsBySession(latestTrip.id);
+      }
+
+      // Stream to Socket.IO for real-time monitoring with image URL
+      socketIOServer.emit('dms:violation', {
+        device_id: deviceId,
+        trip_id: latestTrip?.id,
+        trip_number: latestTrip?.tripNumber,
+        behavior_violate: violationInfo.behavior_violate,
+        speed: violationInfo.speed,
+        location: {
+          latitude: violationInfo.latitude,
+          longitude: violationInfo.longitude,
+          gps_timestamp: violationInfo.gps_timestamp,
+        },
+        driver_name: driverInfo.driver_name,
+        driver_license: driverInfo.driver_license_number,
+        image_url: imageUrl, // Send URL instead of base64
+        dms_violation_count: dmsViolationCount,
+        message_id: payload.message_id,
+        time_stamp: payload.time_stamp,
+      });
+
+      // Emit to specific device room
+      socketIOServer.to(`device:${deviceId}`).emit('device:dms:violation', {
+        device_id: deviceId,
+        behavior_violate: violationInfo.behavior_violate,
+        speed: violationInfo.speed,
+        image_url: imageUrl, // Send URL instead of base64
+        dms_violation_count: dmsViolationCount,
+        trip_id: latestTrip?.id,
+        message_id: payload.message_id,
+        time_stamp: payload.time_stamp,
+      });
+
+      logger.info(`DMS violation processed successfully for ${deviceId}. Total violations in session: ${dmsViolationCount}`);
+
+    } catch (error) {
+      logger.error('Error handling DMS data:', error);
     }
   }
 

@@ -17,6 +17,7 @@ export const config = {
       parkingState: process.env.MQTT_TOPIC_PARKING_STATE || 'fms/+/driving_session/parking_state',
       drivingTime: process.env.MQTT_TOPIC_DRIVING_TIME || 'fms/+/driving_session/continuous_driving_time',
       vehicleOperationManager: process.env.MQTT_TOPIC_VEHICLE_OPERATION_MANAGER || 'fms/+/driving_session/vehicle_operation_manager',
+      dms: process.env.MQTT_TOPIC_DMS || 'fms/+/DMS',
     },
     clientId: `mqtt_service_${Math.random().toString(16).slice(3)}`,
   },
@@ -31,7 +32,7 @@ export const config = {
     port: parseInt(process.env.POSTGRES_PORT || '5432'),
     database: process.env.POSTGRES_DB || 'fleet_telemetry',
     user: process.env.POSTGRES_USER || 'fleet',
-    password: process.env.POSTGRES_PASSWORD || '098poiA#',
+    password: (process.env.POSTGRES_PASSWORD || '098poiA#').replace(/^["']|["']$/g, ''),
   },
   socketio: {
     port: parseInt(process.env.SOCKETIO_PORT || '3000'),
@@ -42,5 +43,13 @@ export const config = {
   },
   api: {
     baseUrl: process.env.API_BASE_URL || 'http://103.216.116.186:8086',
+  },
+  minio: {
+    endpoint: process.env.MINIO_ENDPOINT || '103.216.116.186',
+    port: parseInt(process.env.MINIO_PORT || '9000'),
+    accessKey: process.env.MINIO_ACCESS_KEY || 'minio_admin',
+    secretKey: (process.env.MINIO_SECRET_KEY || '098poiA#').replace(/^["']|["']$/g, ''),
+    useSSL: process.env.MINIO_USE_SSL === 'true',
+    bucket: process.env.MINIO_BUCKET || 'fleet-snapshots',
   },
 };
