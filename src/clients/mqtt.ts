@@ -170,15 +170,12 @@ class MQTTService {
     try {
       logger.debug(`Received GPS data from device: ${deviceId}, points: ${payload.gps_data.length}`);
 
-      // Add GPS points to buffer
-      this.addToGPSBuffer(deviceId, payload.gps_data);
+      // Stream raw GPS data to real-time dashboard immediately
+      this.streamRawGPSData(deviceId, payload);
 
-      // Process GPS data in parallel - cache and stream raw data
-      await Promise.allSettled([
-        this.cacheGPSData(deviceId, payload),
-        this.streamRawGPSData(deviceId, payload),
-        this.storeGPSData(deviceId, payload),
-      ]);
+      // Add GPS points to buffer for snap-to-road processing
+      // Cache and store will be done AFTER successful snap (in streamSnappedGPSData)
+      this.addToGPSBuffer(deviceId, payload.gps_data);
 
     } catch (error) {
       logger.error('Error handling GPS data:', error);
@@ -623,7 +620,7 @@ class MQTTService {
    * Applies smoothing to reduce zigzag/jitter
    * Skips if vehicle is stationary/parking (avoid clutter in parking lots)
    */
-  private streamRawGPSAsPath(deviceId: string, points: GPSDataPoint[]): void {
+  private async streamRawGPSAsPath(deviceId: string, points: GPSDataPoint[]): Promise<void> {
     try {
       if (points.length === 0) {
         logger.warn(`No raw GPS points to stream for ${deviceId}`);
@@ -674,6 +671,12 @@ class MQTTService {
       // Emit as snapped data (same channel) but with 0% confidence
       socketIOServer.emit('gps:snapped', streamData);
       socketIOServer.emit(`${deviceId}:snapped`, streamData);
+
+      // Cache and store raw GPS data when using fallback
+      await Promise.allSettled([
+        this.cacheRawGPSData(deviceId, points),
+        this.storeRawGPSData(deviceId, points),
+      ]);
 
       logger.info(
         `Streamed raw GPS as fallback path for ${deviceId}: ${points.length} points, ` +
@@ -1098,14 +1101,14 @@ class MQTTService {
    * Stream snapped GPS data to dashboard via Socket.IO
    * Stream the FULL snapped path geometry to render accurate curves
    */
-  private streamSnappedGPSData(
+  private async streamSnappedGPSData(
     deviceId: string, 
     data: {
       originalPoints: GPSDataPoint[];
       snapResult: SnapResultData;
       timestamp: number;
     }
-  ): void {
+  ): Promise<void> {
     try {
       // Get FULL geometry from OSRM (all matched points)
       const geometry = data.snapResult.geometry;
@@ -1136,11 +1139,157 @@ class MQTTService {
       // Also emit to device-specific channel
       socketIOServer.emit(`${deviceId}:snapped`, streamData);
 
+      // Cache and store snapped GPS data (more accurate than raw GPS)
+      await Promise.allSettled([
+        this.cacheSnappedGPSData(deviceId, data),
+        this.storeSnappedGPSData(deviceId, data),
+      ]);
+
       const confidence = data.snapResult.confidence || 0;
       logger.debug(`Streamed snapped GPS for ${deviceId}: ${coordinates.length} points, confidence=${(confidence * 100).toFixed(1)}%`);
 
     } catch (error) {
       logger.error('Error streaming snapped GPS data:', error);
+    }
+  }
+
+  /**
+   * Cache snapped GPS data in Redis (more accurate than raw GPS)
+   */
+  private async cacheSnappedGPSData(
+    deviceId: string,
+    data: {
+      originalPoints: GPSDataPoint[];
+      snapResult: SnapResultData;
+      timestamp: number;
+    }
+  ): Promise<void> {
+    try {
+      // Get the last snapped coordinate (closest to current position)
+      const geometry = data.snapResult.geometry;
+      if (!geometry || !geometry.coordinates || geometry.coordinates.length === 0) {
+        logger.warn(`No snapped geometry to cache for ${deviceId}`);
+        return;
+      }
+
+      const lastSnappedCoord = geometry.coordinates[geometry.coordinates.length - 1];
+      const lastOriginalPoint = data.originalPoints[data.originalPoints.length - 1];
+
+      // Create snapped GPS data point (use snapped coordinates with original metadata)
+      const snappedGPSData = {
+        latitude: lastSnappedCoord[1], // Snapped latitude
+        longitude: lastSnappedCoord[0], // Snapped longitude
+        speed: lastOriginalPoint.speed,
+        accuracy: lastOriginalPoint.accuracy,
+        gps_timestamp: lastOriginalPoint.gps_timestamp,
+      };
+
+      const cacheData = {
+        time_stamp: data.timestamp,
+        message_id: `snapped_${data.timestamp}`,
+        gps_data: snappedGPSData,
+        confidence: data.snapResult.confidence,
+        is_snapped: true,
+      };
+
+      await redisClient.cacheGPSData(deviceId, cacheData, this.ttlGPSCache);
+      logger.debug(`Cached snapped GPS data for ${deviceId} (confidence: ${(data.snapResult.confidence! * 100).toFixed(1)}%)`);
+    } catch (error) {
+      logger.error('Error caching snapped GPS data:', error);
+    }
+  }
+
+  /**
+   * Store snapped GPS data in TimescaleDB (more accurate than raw GPS)
+   */
+  private async storeSnappedGPSData(
+    deviceId: string,
+    data: {
+      originalPoints: GPSDataPoint[];
+      snapResult: SnapResultData;
+      timestamp: number;
+    }
+  ): Promise<void> {
+    try {
+      const geometry = data.snapResult.geometry;
+      if (!geometry || !geometry.coordinates || geometry.coordinates.length === 0) {
+        logger.warn(`No snapped geometry to store for ${deviceId}`);
+        return;
+      }
+
+      // Convert snapped coordinates to GPSDataPoint format
+      const snappedGPSPoints: GPSDataPoint[] = geometry.coordinates.map((coord, index) => {
+        // Use original point metadata if available, otherwise use last point's metadata
+        const originalPoint = data.originalPoints[Math.min(index, data.originalPoints.length - 1)];
+        
+        return {
+          latitude: coord[1], // Snapped latitude
+          longitude: coord[0], // Snapped longitude
+          speed: originalPoint.speed,
+          accuracy: originalPoint.accuracy,
+          gps_timestamp: originalPoint.gps_timestamp,
+        };
+      });
+
+      // Create payload with snapped data
+      const snappedPayload: GPSDataPayload = {
+        time_stamp: data.timestamp,
+        message_id: `snapped_${data.timestamp}`,
+        gps_data: snappedGPSPoints,
+      };
+
+      await timescaleDB.insertGPSDataBatch(deviceId, snappedPayload);
+      logger.debug(`Stored ${snappedGPSPoints.length} snapped GPS points for ${deviceId}`);
+    } catch (error) {
+      logger.error('Error storing snapped GPS data:', error);
+    }
+  }
+
+  /**
+   * Cache raw GPS data in Redis (fallback when snap fails)
+   */
+  private async cacheRawGPSData(deviceId: string, points: GPSDataPoint[]): Promise<void> {
+    try {
+      if (points.length === 0) {
+        return;
+      }
+
+      const lastPoint = points[points.length - 1];
+
+      const cacheData = {
+        time_stamp: Date.now(),
+        message_id: `raw_fallback_${Date.now()}`,
+        gps_data: lastPoint,
+        confidence: 0, // 0% confidence for raw GPS
+        is_snapped: false,
+      };
+
+      await redisClient.cacheGPSData(deviceId, cacheData, this.ttlGPSCache);
+      logger.debug(`Cached raw GPS data for ${deviceId} (fallback mode)`);
+    } catch (error) {
+      logger.error('Error caching raw GPS data:', error);
+    }
+  }
+
+  /**
+   * Store raw GPS data in TimescaleDB (fallback when snap fails)
+   */
+  private async storeRawGPSData(deviceId: string, points: GPSDataPoint[]): Promise<void> {
+    try {
+      if (points.length === 0) {
+        return;
+      }
+
+      const payload: GPSDataPayload = {
+        time_stamp: Date.now(),
+        message_id: `raw_fallback_${Date.now()}`,
+        gps_data: points,
+      };
+
+      await timescaleDB.insertGPSDataBatch(deviceId, payload);
+      logger.debug(`Stored ${points.length} raw GPS points for ${deviceId} (fallback mode)`);
+    } catch (error) {
+      logger.error('Error storing raw GPS data:', error);
     }
   }
 
