@@ -25,8 +25,10 @@ class MQTTService {
   private gpsBufferSize = 8; // Base buffer size - will be adjusted dynamically based on speed
   private gpsBufferTimeout = 4000; // 4 seconds
   private gpsBufferTimers: Map<string, NodeJS.Timeout> = new Map();
-  private minConfidenceThreshold = 0.7; // 70% minimum confidence - stricter to avoid wrong road matches
+  private minConfidenceThreshold = 0.5; // 50% minimum confidence - more lenient to reduce zigzag from frequent fallback
   private lastStreamedSnappedPoint: Map<string, [number, number]> = new Map(); // Track last streamed point per device
+  private lastPathType: Map<string, 'raw' | 'snapped'> = new Map(); // Track last path type to smooth transitions
+  private lastPathEndPoint: Map<string, [number, number]> = new Map(); // Track last path end point for smooth transitions
 
   /**
    * Connect to MQTT broker
@@ -276,17 +278,17 @@ class MQTTService {
     let bufferSize: number;
 
     if (speedKmh < 10) {
-      // Very slow/parking - fewer points needed (5-6 points)
-      bufferSize = 5;
-    } else if (speedKmh < 30) {
-      // City speed - moderate points (6-8 points)
+      // Very slow/parking - fewer points needed (6-7 points, increased from 4)
       bufferSize = 6;
-    } else if (speedKmh < 60) {
-      // Higher city speed - more points for smooth curves (8-10 points)
-      bufferSize = 7;
-    } else {
-      // Highway speed - maximum points for very smooth rendering (10-12 points)
+    } else if (speedKmh < 30) {
+      // City speed - moderate points (8-9 points, increased from 5)
       bufferSize = 8;
+    } else if (speedKmh < 60) {
+      // Higher city speed - more points for smooth curves (10-11 points, increased from 6)
+      bufferSize = 10;
+    } else {
+      // Highway speed - maximum points for very smooth rendering (12-14 points, increased from 7)
+      bufferSize = 12;
     }
 
     logger.debug(`Dynamic buffer size for speed ${speedKmh.toFixed(1)} km/h: ${bufferSize} points`);
@@ -372,10 +374,28 @@ class MQTTService {
           );
         }
 
-        // Check confidence threshold (70%)
-        if (confidence < this.minConfidenceThreshold) {
+        // Detect highway/expressway conditions
+        const avgSpeed = gpsPoints.reduce((sum, p) => sum + p.speed, 0) / gpsPoints.length;
+        const avgAccuracy = gpsPoints.reduce((sum, p) => sum + p.accuracy, 0) / gpsPoints.length;
+        const isHighwayCondition = avgSpeed > 60 && avgAccuracy < 20; // Highway: high speed + good GPS accuracy
+        
+        // Dynamic confidence threshold based on conditions
+        let confidenceThreshold = this.minConfidenceThreshold; // Default: 0.5 (50%)
+        
+        if (isHighwayCondition) {
+          // For highway with many lanes, OSRM often gives low confidence due to lane ambiguity
+          // But if GPS accuracy is good and path is relatively straight, we can trust the snap
+          confidenceThreshold = 0.3; // Reduce to 30% for highway
+          logger.debug(
+            `🛣️ Highway detected for ${deviceId} (speed: ${avgSpeed.toFixed(1)} km/h, accuracy: ${avgAccuracy.toFixed(1)}m). ` +
+            `Using relaxed confidence threshold: ${(confidenceThreshold * 100).toFixed(0)}%`
+          );
+        }
+        
+        // Check confidence threshold with dynamic adjustment
+        if (confidence < confidenceThreshold) {
           logger.warn(
-            `Low confidence (${(confidence * 100).toFixed(1)}%) for ${deviceId}. ` +
+            `Low confidence (${(confidence * 100).toFixed(1)}%) for ${deviceId} (threshold: ${(confidenceThreshold * 100).toFixed(0)}%). ` +
             `Using raw GPS path instead of unreliable snap result.`
           );
           
@@ -433,11 +453,20 @@ class MQTTService {
         let headingDiff = ((snappedHeading - rawHeading + 540) % 360) - 180;
         headingDiff = Math.abs(headingDiff);
         
-        // If heading differs by more than 45 degrees, likely wrong road (parallel/perpendicular road)
-        if (headingDiff > 45 && straightDistance > 30) {
+        // Dynamic heading threshold based on conditions
+        let headingThreshold = 45; // Default: 45 degrees
+        
+        if (isHighwayCondition && straightDistance > 100) {
+          // On long straight highway segments, heading should be very consistent
+          // Reduce threshold to detect wrong road matches earlier
+          headingThreshold = 30; // 30 degrees for highway
+        }
+        
+        // If heading differs by more than threshold, likely wrong road (parallel/perpendicular road)
+        if (headingDiff > headingThreshold && straightDistance > 30) {
           logger.warn(
             `⚠️ Suspicious heading difference for ${deviceId}: ` +
-            `raw=${rawHeading.toFixed(0)}°, snapped=${snappedHeading.toFixed(0)}°, diff=${headingDiff.toFixed(0)}°. ` +
+            `raw=${rawHeading.toFixed(0)}°, snapped=${snappedHeading.toFixed(0)}°, diff=${headingDiff.toFixed(0)}° (threshold: ${headingThreshold}°). ` +
             `Possibly matched wrong parallel/perpendicular road - using raw GPS.`
           );
           
@@ -450,13 +479,22 @@ class MQTTService {
         // If raw GPS is relatively straight but snapped path is too curved, reject
         const curvatureRatio = matchedDistance / Math.max(straightDistance, 1);
         
-        // For straight segments (straightDistance > 50m), reject if snapped path is > 1.3x longer
+        // Dynamic curvature threshold based on conditions
+        let curvatureThreshold = 1.3; // Default: 1.3x
+        
+        if (isHighwayCondition) {
+          // Highway roads are generally straighter, allow slightly more tolerance
+          // for lane changes and ramp merges
+          curvatureThreshold = 1.5; // 1.5x for highway
+        }
+        
+        // For straight segments (straightDistance > 50m), reject if snapped path is too curved
         // This catches cases where OSRM matches to curved/winding parallel road
-        if (straightDistance > 50 && curvatureRatio > 1.3) {
+        if (straightDistance > 50 && curvatureRatio > curvatureThreshold) {
           logger.warn(
             `⚠️ Suspicious curvature for ${deviceId}: ` +
             `straight=${straightDistance.toFixed(0)}m, matched=${matchedDistance.toFixed(0)}m, ` +
-            `ratio=${curvatureRatio.toFixed(2)}. Raw GPS appears straight but snap is too curved - using raw GPS.`
+            `ratio=${curvatureRatio.toFixed(2)} (threshold: ${curvatureThreshold}). Raw GPS appears straight but snap is too curved - using raw GPS.`
           );
           
           this.streamRawGPSAsPath(deviceId, buffer);
@@ -471,13 +509,29 @@ class MQTTService {
           snappedCoords
         );
         
-        // If raw GPS points deviate more than 15m perpendicular from snapped path,
-        // likely matched to parallel road (e.g., bridge vs ground level road)
-        if (avgPerpendicularDeviation > 15) {
+        // Dynamic perpendicular deviation threshold based on conditions
+        let perpendicularThreshold = 12; // Default: 12m
+        
+        if (isHighwayCondition) {
+          // On highway with multiple lanes, GPS can drift between lanes (each lane ~3.5m wide)
+          // Allow larger deviation: up to 20m (about 5-6 lanes)
+          perpendicularThreshold = 20;
+        }
+        
+        // Log perpendicular deviation for debugging
+        logger.info(
+          `📏 Perpendicular deviation for ${deviceId}: ${avgPerpendicularDeviation.toFixed(1)}m ` +
+          `(threshold: ${perpendicularThreshold}m, confidence: ${(snapResult.confidence! * 100).toFixed(1)}%, ` +
+          `highway: ${isHighwayCondition})`
+        );
+        
+        // If raw GPS points deviate more than threshold perpendicular from snapped path,
+        // likely matched to parallel/wrong road
+        if (avgPerpendicularDeviation > perpendicularThreshold) {
           logger.warn(
             `⚠️ High perpendicular deviation for ${deviceId}: ` +
-            `avgDeviation=${avgPerpendicularDeviation.toFixed(1)}m. ` +
-            `Raw GPS appears to be on different road (e.g., bridge vs ground) - using raw GPS.`
+            `avgDeviation=${avgPerpendicularDeviation.toFixed(1)}m (threshold: ${perpendicularThreshold}m). ` +
+            `Snapped path deviates too far from raw GPS - using raw GPS.`
           );
           
           this.streamRawGPSAsPath(deviceId, buffer);
@@ -590,6 +644,52 @@ class MQTTService {
       // Apply smoothing to raw GPS to reduce zigzag
       const smoothedPoints = this.smoothGPSPoints(points);
       
+      // Smooth transition: blend with last path's end point if switching from snapped to raw
+      const lastType = this.lastPathType.get(deviceId);
+      const lastEndPoint = this.lastPathEndPoint.get(deviceId);
+      
+      if (lastType === 'snapped' && lastEndPoint && smoothedPoints.length > 1) {
+        // We're switching from snapped → raw, smooth the transition
+        const firstRawPoint = smoothedPoints[0];
+        const secondRawPoint = smoothedPoints[1];
+        const transitionDistance = Math.sqrt(
+          Math.pow((firstRawPoint.latitude - lastEndPoint[1]) * 111000, 2) +
+          Math.pow((firstRawPoint.longitude - lastEndPoint[0]) * 111000, 2)
+        );
+        
+        // Only blend if transition gap is < 40m (reasonable GPS sampling gap)
+        if (transitionDistance < 40) {
+          // Create smooth cubic Bezier curve with multiple interpolation points
+          const transitionPoints = this.createSmoothTransition(
+            [lastEndPoint[0], lastEndPoint[1]], // From: last snapped point
+            [firstRawPoint.longitude, firstRawPoint.latitude], // To: first raw point
+            [secondRawPoint.longitude, secondRawPoint.latitude], // Direction hint: second raw point
+            5 // Number of interpolation points
+          );
+          
+          // Convert transition points to GPSDataPoint format
+          const transitionGPSPoints: GPSDataPoint[] = transitionPoints.map(coord => ({
+            latitude: coord[1],
+            longitude: coord[0],
+            speed: firstRawPoint.speed,
+            accuracy: firstRawPoint.accuracy,
+            gps_timestamp: firstRawPoint.gps_timestamp,
+          }));
+          
+          // Insert transition curve at the beginning
+          smoothedPoints.unshift(...transitionGPSPoints);
+          
+          logger.debug(
+            `🔀 Smooth transition snapped→raw for ${deviceId}: ` +
+            `gap=${transitionDistance.toFixed(1)}m, added ${transitionPoints.length} interpolation points`
+          );
+        } else {
+          logger.warn(
+            `⚠️ Large gap in transition snapped→raw for ${deviceId}: ${transitionDistance.toFixed(1)}m`
+          );
+        }
+      }
+      
       // Convert smoothed GPS points to GeoJSON LineString (longitude, latitude format)
       const coordinates = smoothedPoints.map(p => [p.longitude, p.latitude]);
       
@@ -622,6 +722,13 @@ class MQTTService {
       // Emit as snapped data (same channel) but with 0% confidence
       socketIOServer.emit('gps:snapped', streamData);
       socketIOServer.emit(`${deviceId}:snapped`, streamData);
+      
+      // Track this path type and end point for smooth transitions
+      this.lastPathType.set(deviceId, 'raw');
+      if (coordinates.length > 0) {
+        const lastCoord = coordinates[coordinates.length - 1];
+        this.lastPathEndPoint.set(deviceId, lastCoord);
+      }
 
       logger.info(
         `Streamed raw GPS as fallback path for ${deviceId}: ${points.length} points, ` +
@@ -644,7 +751,7 @@ class MQTTService {
 
     // Check average speed
     const avgSpeed = points.reduce((sum, p) => sum + p.speed, 0) / points.length;
-    const avgSpeedKmh = avgSpeed * 3.6;
+    const avgSpeedKmh = avgSpeed;
 
     // Check maximum displacement (bounding box)
     const lats = points.map(p => p.latitude);
@@ -1062,18 +1169,59 @@ class MQTTService {
         return;
       }
 
+      // Smooth transition: blend with last path's end point if switching from raw to snapped
+      const lastType = this.lastPathType.get(deviceId);
+      const lastEndPoint = this.lastPathEndPoint.get(deviceId);
+      let coordinates = [...geometry.coordinates]; // Clone coordinates array
+      
+      if (lastType === 'raw' && lastEndPoint && coordinates.length > 1) {
+        // We're switching from raw → snapped, smooth the transition
+        const firstSnappedPoint = coordinates[0];
+        const secondSnappedPoint = coordinates[1];
+        const transitionDistance = Math.sqrt(
+          Math.pow((firstSnappedPoint[1] - lastEndPoint[1]) * 111000, 2) +
+          Math.pow((firstSnappedPoint[0] - lastEndPoint[0]) * 111000, 2)
+        );
+        
+        // Only blend if transition gap is < 40m (reasonable GPS sampling gap)
+        if (transitionDistance < 40) {
+          // Create smooth cubic Bezier curve with multiple interpolation points
+          const transitionPoints = this.createSmoothTransition(
+            lastEndPoint, // From: last raw point
+            firstSnappedPoint, // To: first snapped point
+            secondSnappedPoint, // Direction hint: second snapped point
+            5 // Number of interpolation points
+          );
+          
+          // Insert transition curve at the beginning
+          coordinates.unshift(...transitionPoints);
+          
+          logger.debug(
+            `🔀 Smooth transition raw→snapped for ${deviceId}: ` +
+            `gap=${transitionDistance.toFixed(1)}m, added ${transitionPoints.length} interpolation points`
+          );
+        } else {
+          logger.warn(
+            `⚠️ Large gap in transition raw→snapped for ${deviceId}: ${transitionDistance.toFixed(1)}m`
+          );
+        }
+      }
+
       // Send ALL coordinates from OSRM match, not just the last one
       // This ensures curves, roundabouts, and turns are rendered accurately
       const streamData = {
         device_id: deviceId,
         timestamp: data.timestamp,
         original_points: data.originalPoints,
-        snapped_geometry: geometry, // Send FULL geometry with ALL points
+        snapped_geometry: {
+          type: 'LineString',
+          coordinates: coordinates, // Use modified coordinates with blend point
+        },
         confidence: data.snapResult.confidence,
         distance: data.snapResult.distance,
         duration: data.snapResult.duration,
         original_count: data.snapResult.originalPointsCount,
-        snapped_count: data.snapResult.snappedPointsCount,
+        snapped_count: coordinates.length, // Update count with blended coordinates
       };
 
       // Emit snapped GPS data to dashboard
@@ -1081,9 +1229,16 @@ class MQTTService {
 
       // Also emit to device-specific channel
       socketIOServer.emit(`${deviceId}:snapped`, streamData);
+      
+      // Track this path type and end point for smooth transitions
+      this.lastPathType.set(deviceId, 'snapped');
+      if (coordinates.length > 0) {
+        const lastCoord = coordinates[coordinates.length - 1];
+        this.lastPathEndPoint.set(deviceId, lastCoord);
+      }
 
       const confidence = data.snapResult.confidence || 0;
-      logger.debug(`Streamed snapped GPS for ${deviceId}: ${geometry.coordinates.length} points, confidence=${(confidence * 100).toFixed(1)}%`);
+      logger.debug(`Streamed snapped GPS for ${deviceId}: ${coordinates.length} points, confidence=${(confidence * 100).toFixed(1)}%`);
 
     } catch (error) {
       logger.error('Error streaming snapped GPS data:', error);
@@ -1897,6 +2052,69 @@ class MQTTService {
     } catch (error) {
       logger.error('Error handling vehicle operation manager:', error);
     }
+  }
+
+  /**
+   * Create smooth transition curve between two points using cubic Bezier interpolation
+   * This creates a natural curved path instead of sharp zigzag when switching between raw/snapped
+   * 
+   * @param start - Starting point [lng, lat]
+   * @param end - Ending point [lng, lat]
+   * @param directionHint - Next point after end for curve direction [lng, lat]
+   * @param numPoints - Number of interpolation points (default: 5)
+   * @returns Array of interpolated points [lng, lat]
+   */
+  private createSmoothTransition(
+    start: [number, number],
+    end: [number, number],
+    directionHint: [number, number],
+    numPoints: number = 5
+  ): [number, number][] {
+    const result: [number, number][] = [];
+    
+    // Calculate control points for cubic Bezier curve
+    // P0 = start point
+    // P3 = end point
+    // P1, P2 = control points (calculated to create smooth curve)
+    
+    // Control point 1: 1/3 of the way from start to end
+    const p1: [number, number] = [
+      start[0] + (end[0] - start[0]) * 0.33,
+      start[1] + (end[1] - start[1]) * 0.33,
+    ];
+    
+    // Control point 2: 2/3 of the way, adjusted toward direction hint
+    const directionWeight = 0.2; // How much to influence by direction hint
+    const p2: [number, number] = [
+      start[0] + (end[0] - start[0]) * 0.67 + (directionHint[0] - end[0]) * directionWeight,
+      start[1] + (end[1] - start[1]) * 0.67 + (directionHint[1] - end[1]) * directionWeight,
+    ];
+    
+    // Generate interpolated points along the Bezier curve
+    for (let i = 1; i <= numPoints; i++) {
+      const t = i / (numPoints + 1); // Parameter from 0 to 1 (excluding 0 and 1)
+      
+      // Cubic Bezier formula: B(t) = (1-t)³P0 + 3(1-t)²tP1 + 3(1-t)t²P2 + t³P3
+      const mt = 1 - t;
+      const mt2 = mt * mt;
+      const mt3 = mt2 * mt;
+      const t2 = t * t;
+      const t3 = t2 * t;
+      
+      const lng = mt3 * start[0] + 
+                  3 * mt2 * t * p1[0] + 
+                  3 * mt * t2 * p2[0] + 
+                  t3 * end[0];
+                  
+      const lat = mt3 * start[1] + 
+                  3 * mt2 * t * p1[1] + 
+                  3 * mt * t2 * p2[1] + 
+                  t3 * end[1];
+      
+      result.push([lng, lat]);
+    }
+    
+    return result;
   }
 
   /**

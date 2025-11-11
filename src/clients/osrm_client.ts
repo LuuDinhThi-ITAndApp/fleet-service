@@ -16,7 +16,7 @@ class OsrmClient implements IOsrmClient {
 
   // Performance configurations
   private readonly MAX_POINTS_PER_BATCH = 5;
-  private readonly MAX_RADIUS = 50;      // Reduce from 100m to 50m - prevent matching wrong parallel roads
+  private readonly MAX_RADIUS = 30;      // Reduce from 100m to 50m - prevent matching wrong parallel roads
   private readonly MIN_RADIUS = 10;      // Reduce from 20m to 10m - trust good GPS accuracy
   private readonly TIMEOUT_MS = 10000;   // 10 seconds
 
@@ -49,13 +49,13 @@ class OsrmClient implements IOsrmClient {
     
     let maxPoints: number;
     if (speedKmh < 10) {
-      maxPoints = 5; // Very slow - fewer points
+      maxPoints = 4; // Very slow - increased from 5 to 8 for better curve detail
     } else if (speedKmh < 30) {
-      maxPoints = 7; // City speed - moderate
+      maxPoints = 6; // City speed - increased from 7 to 12
     } else if (speedKmh < 60) {
-      maxPoints = 9; // Higher speed - more points
+      maxPoints = 8; // Higher speed - increased from 9 to 15
     } else {
-      maxPoints = 12; // Highway - maximum points for smooth curves
+      maxPoints = 10; // Highway - increased from 12 to 20 for smoother curves
     }
 
     // Limit batch size based on speed
@@ -234,16 +234,19 @@ class OsrmClient implements IOsrmClient {
     const speedKmh = speed; // speed is already in km/h
     if (speedKmh < 5) {
       // Very slow/stationary - use small radius, GPS drift is common but prefer accuracy
-      radius = Math.max(radius, 15);
+      radius = Math.max(radius, 10);
     } else if (speedKmh < 20) {
       // Slow (roundabouts, turns) - small radius for precision
-      radius = Math.max(radius, 18);
-    } else if (speedKmh < 50) {
+      radius = Math.max(radius, 12);
+    } else if (speedKmh < 30) {
       // Normal city speed - moderate radius
-      radius = Math.max(radius, 22);
+      radius = Math.max(radius, 15);
+    }  else if (speedKmh < 50) {
+      // Normal city speed - moderate radius
+      radius = Math.max(radius, 18);
     } else {
       // High speed highway - larger radius acceptable
-      radius = Math.max(radius, 30);
+      radius = Math.max(radius, 25);
     }
 
     // Middle points get slightly more tolerance for curves
