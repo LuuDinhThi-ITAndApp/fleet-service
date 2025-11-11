@@ -449,7 +449,7 @@
           color: colors.snapped,
           weight: 5,
           opacity: isRawFallback ? 0.6 : 0.8,
-          smoothFactor: isRawFallback ? 3.0 : 8.0,  // Increased smoothing: 2→3 for raw, 5→8 for snap
+          smoothFactor: isRawFallback ? 3.0 : 5.0,  // Back to reasonable values: 3 for raw, 5 for snap
           lineCap: 'round',
           lineJoin: 'round',
           dashArray: isRawFallback ? '10, 5' : null  // Dashed line for raw GPS
@@ -459,7 +459,7 @@
         // Update style if switching between raw/snapped
         snappedPaths[data.device_id].setStyle({
           opacity: isRawFallback ? 0.6 : 0.8,
-          smoothFactor: isRawFallback ? 3.0 : 8.0,
+          smoothFactor: isRawFallback ? 3.0 : 5.0,
           dashArray: isRawFallback ? '10, 5' : null
         });
       }
@@ -470,9 +470,9 @@
         for (const newPoint of snappedCoords) {
           const lastPoint = lastSnappedCoords[data.device_id];
           
-          // Distance threshold: 3 meters (reduced from 5m to keep maximum detail)
+          // Distance threshold: 5 meters - skip only very close duplicate points
           const shouldAddPoint = !lastPoint || 
-              map.distance(lastPoint, newPoint) > 3;
+              map.distance(lastPoint, newPoint) > 5;
           
           if (shouldAddPoint) {
             snappedPaths[data.device_id].addLatLng(newPoint);

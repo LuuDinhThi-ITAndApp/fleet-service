@@ -51,11 +51,11 @@ class OsrmClient implements IOsrmClient {
     if (speedKmh < 10) {
       maxPoints = 4; // Very slow - increased from 5 to 8 for better curve detail
     } else if (speedKmh < 30) {
-      maxPoints = 6; // City speed - increased from 7 to 12
+      maxPoints = 8; // City speed - increased from 7 to 12
     } else if (speedKmh < 60) {
-      maxPoints = 8; // Higher speed - increased from 9 to 15
+      maxPoints = 12; // Higher speed - increased from 9 to 15
     } else {
-      maxPoints = 10; // Highway - increased from 12 to 20 for smoother curves
+      maxPoints = 20; // Highway - increased from 12 to 20 for smoother curves
     }
 
     // Limit batch size based on speed
