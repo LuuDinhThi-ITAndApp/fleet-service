@@ -18,6 +18,8 @@ export const config = {
       drivingTime: process.env.MQTT_TOPIC_DRIVING_TIME || 'fms/+/driving_session/continuous_driving_time',
       vehicleOperationManager: process.env.MQTT_TOPIC_VEHICLE_OPERATION_MANAGER || 'fms/+/driving_session/vehicle_operation_manager',
       dms: process.env.MQTT_TOPIC_DMS || 'fms/+/DMS',
+      oms: process.env.MQTT_TOPIC_OMS || 'fms/+/OMS',
+      streamingEvent: process.env.MQTT_TOPIC_STREAMMING_EVENT || 'fms/+/driving_session/streamming_event',
     },
     clientId: `mqtt_service_${Math.random().toString(16).slice(3)}`,
   },

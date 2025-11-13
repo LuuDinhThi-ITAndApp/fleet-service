@@ -5,6 +5,7 @@ import { config } from '../config';
 import { logger } from '../utils/logger';
 import { redisClient } from '../clients/redis';
 import { timescaleDB } from '../clients/timescaledb';
+import { mqttService } from '../clients/mqtt';
 
 class SocketIOService {
   private app: express.Application;
@@ -15,11 +16,11 @@ class SocketIOService {
   constructor() {
     this.app = express();
     this.httpServer = createServer(this.app);
-    
+
     this.io = new Server(this.httpServer, {
       cors: {
-        origin: config.socketio.corsOrigin,
-        methods: ['GET', 'POST'],
+        origin: '*', // Allow all origins
+        methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
         credentials: true,
       },
       transports: ['websocket', 'polling'],
@@ -33,6 +34,21 @@ class SocketIOService {
    * Setup Express middleware
    */
   private setupMiddleware(): void {
+    // Enable CORS for Express API
+    this.app.use((req, res, next) => {
+      res.header('Access-Control-Allow-Origin', '*');
+      res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, PATCH, OPTIONS');
+      res.header('Access-Control-Allow-Headers', 'Origin, X-Requested-With, Content-Type, Accept, Authorization');
+      res.header('Access-Control-Allow-Credentials', 'true');
+
+      // Handle preflight requests
+      if (req.method === 'OPTIONS') {
+        return res.sendStatus(200);
+      }
+
+      next();
+    });
+
     this.app.use(express.json());
 
     // Health check endpoint
@@ -60,12 +76,93 @@ class SocketIOService {
       try {
         const { deviceId } = req.params;
         const limit = parseInt(req.query.limit as string) || 100;
-        
+
         const events = await timescaleDB.getDeviceEvents(deviceId, limit);
         res.json({ events });
       } catch (error) {
         logger.error('Error fetching device history:', error);
         res.status(500).json({ error: 'Internal server error' });
+      }
+    });
+
+    // Streaming request endpoint
+    this.app.post('/api/devices/:deviceId/streaming', async (req, res) => {
+      try {
+        const { deviceId } = req.params;
+        const { streaming_state } = req.body;
+
+        // Validate deviceId
+        if (!deviceId || deviceId.trim() === '') {
+          return res.status(400).json({
+            error: 'Device ID is required',
+            success: false
+          });
+        }
+
+        // Map streaming state to number
+        const stateMap: { [key: string]: 0 | 1 | 2 | 3 } = {
+          'Oms': 0,
+          'Dms': 1,
+          'Dash': 2,
+          'Off': 3,
+          '0': 0,
+          '1': 1,
+          '2': 2,
+          '3': 3
+        };
+
+        let stateValue: 0 | 1 | 2 | 3;
+
+        // Accept both string names and numeric values
+        if (typeof streaming_state === 'number') {
+          if (streaming_state >= 0 && streaming_state <= 3) {
+            stateValue = streaming_state as 0 | 1 | 2 | 3;
+          } else {
+            return res.status(400).json({
+              error: 'Invalid streaming_state. Must be 0 (Oms), 1 (Dms), 2 (Dash), or 3 (Off)',
+              success: false
+            });
+          }
+        } else if (typeof streaming_state === 'string') {
+          const mappedValue = stateMap[streaming_state];
+          if (mappedValue === undefined) {
+            return res.status(400).json({
+              error: 'Invalid streaming_state. Must be one of: Oms (0), Dms (1), Dash (2), Off (3)',
+              success: false
+            });
+          }
+          stateValue = mappedValue;
+        } else {
+          return res.status(400).json({
+            error: 'streaming_state is required',
+            success: false
+          });
+        }
+
+        // Publish MQTT message
+        const result = await mqttService.publishStreamingRequest(deviceId, stateValue);
+
+        if (result.success) {
+          logger.info(`Streaming request sent for device ${deviceId} with state ${stateValue}`);
+          res.json({
+            success: true,
+            message: 'Streaming request published successfully',
+            device_id: deviceId,
+            streaming_state: stateValue
+          });
+        } else {
+          logger.error(`Failed to publish streaming request for device ${deviceId}:`, result.error);
+          res.status(500).json({
+            error: result.error || 'Failed to publish streaming request',
+            success: false
+          });
+        }
+      } catch (error) {
+        logger.error('Error handling streaming request:', error);
+        res.status(500).json({
+          error: 'Internal server error',
+          success: false
+        });
       }
     });
   }
