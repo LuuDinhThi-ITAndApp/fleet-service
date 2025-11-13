@@ -1,16 +1,33 @@
-import mqtt, { MqttClient } from 'mqtt';
-import { config } from '../config';
-import { logger } from '../utils/logger';
-import { EdgeEvent, GPSDataPayload, GPSDataPoint, DriverRequestPayload, DriverInfoPayload, DriverCheckInPayload, CheckOutConfirmRequestPayload, CheckOutConfirmResponsePayload, DriverCheckOutPayload, ParkingStateEvent, DrivingTimeEvent, VehicleOperationManagerEvent } from '../types';
-import { GpsPoint, SnapResultData } from '../types/tracking';
-import { redisClient } from './redis';
-import { timescaleDB } from './timescaledb';
-import { socketIOServer } from '../server/socketio';
-import { driverService } from '../services/driverService';
-import { tripService } from '../services/tripService';
-import { eventLogService } from '../services/eventLogService';
-import { CacheKeys, VehicleState } from '../utils/constants';
-import { osrmClient } from './osrm_client';
+import mqtt, { MqttClient } from "mqtt";
+import { config } from "../config";
+import { logger } from "../utils/logger";
+import {
+  EdgeEvent,
+  GPSDataPayload,
+  GPSDataPoint,
+  DriverRequestPayload,
+  DriverInfoPayload,
+  DriverCheckInPayload,
+  CheckOutConfirmRequestPayload,
+  CheckOutConfirmResponsePayload,
+  DriverCheckOutPayload,
+  ParkingStateEvent,
+  DrivingTimeEvent,
+  VehicleOperationManagerEvent,
+  DMSPayload,
+  OMSPayload,
+  StreamingEventPayload,
+} from "../types";
+import { GpsPoint, SnapResultData } from "../types/tracking";
+import { redisClient } from "./redis";
+import { timescaleDB } from "./timescaledb";
+import { socketIOServer } from "../server/socketio";
+import { minioClient } from "./minio";
+import { driverService } from "../services/driverService";
+import { tripService } from "../services/tripService";
+import { eventLogService } from "../services/eventLogService";
+import { CacheKeys, VehicleState } from "../utils/constants";
+import { osrmClient } from "./osrm_client";
 
 class MQTTService {
   private client: MqttClient | null = null;
@@ -43,24 +60,24 @@ class MQTTService {
       connectTimeout: 30000,
     });
 
-    this.client.on('connect', () => {
-      logger.info('MQTT connected successfully');
+    this.client.on("connect", () => {
+      logger.info("MQTT connected successfully");
       this.subscribe();
     });
 
-    this.client.on('error', (error) => {
-      logger.error('MQTT connection error:', error);
+    this.client.on("error", (error) => {
+      logger.error("MQTT connection error:", error);
     });
 
-    this.client.on('offline', () => {
-      logger.warn('MQTT client offline');
+    this.client.on("offline", () => {
+      logger.warn("MQTT client offline");
     });
 
-    this.client.on('reconnect', () => {
-      logger.info('MQTT reconnecting...');
+    this.client.on("reconnect", () => {
+      logger.info("MQTT reconnecting...");
     });
 
-    this.client.on('message', (topic, payload) => {
+    this.client.on("message", (topic, payload) => {
       this.handleMessage(topic, payload);
     });
   }
@@ -80,9 +97,12 @@ class MQTTService {
       config.mqtt.topics.parkingState,
       config.mqtt.topics.drivingTime,
       config.mqtt.topics.vehicleOperationManager,
+      config.mqtt.topics.dms,
+      config.mqtt.topics.oms,
+      config.mqtt.topics.streamingEvent,
     ];
 
-    topics.forEach(topic => {
+    topics.forEach((topic) => {
       this.client!.subscribe(topic, { qos: 1 }, (err) => {
         if (err) {
           logger.error(`MQTT subscription error for ${topic}:`, err);
@@ -102,51 +122,86 @@ class MQTTService {
       const message = JSON.parse(payload.toString());
 
       // Extract device_id from topic (e.g., fms/device123/operation_monitoring/gps_data -> device123)
-      const topicParts = topic.split('/');
+      const topicParts = topic.split("/");
       const deviceId = topicParts[1] || message.device_id;
 
       // Check if this is a GPS data message
-      if (topic.includes('operation_monitoring/gps_data')) {
+      if (topic.includes("operation_monitoring/gps_data")) {
         await this.handleGPSData(deviceId, message as GPSDataPayload);
       }
       // Check if this is a driver request message
-      else if (topic.includes('driving_session/driver_request')) {
-        await this.handleDriverRequest(deviceId, message as DriverRequestPayload);
+      else if (topic.includes("driving_session/driver_request")) {
+        await this.handleDriverRequest(
+          deviceId,
+          message as DriverRequestPayload
+        );
       }
       // Check if this is a driver check-in message
-      else if (topic.includes('driving_session/driver_checkin')) {
-        await this.handleDriverCheckIn(deviceId, message as DriverCheckInPayload);
+      else if (topic.includes("driving_session/driver_checkin")) {
+        await this.handleDriverCheckIn(
+          deviceId,
+          message as DriverCheckInPayload
+        );
       }
       // Check if this is a check-out confirm request message
-      else if (topic.includes('driving_session/driver_checkout_confirm_request')) {
-        await this.handleCheckOutConfirmRequest(deviceId, message as CheckOutConfirmRequestPayload);
+      else if (
+        topic.includes("driving_session/driver_checkout_confirm_request")
+      ) {
+        await this.handleCheckOutConfirmRequest(
+          deviceId,
+          message as CheckOutConfirmRequestPayload
+        );
       }
       // Check if this is a driver check-out message
-      else if (topic.includes('driving_session/driver_checkout')) {
-        await this.handleDriverCheckOut(deviceId, message as DriverCheckOutPayload);
-      }
-      else if (topic.includes('driving_session/parking_state')) {
+      else if (topic.includes("driving_session/driver_checkout")) {
+        await this.handleDriverCheckOut(
+          deviceId,
+          message as DriverCheckOutPayload
+        );
+      } else if (topic.includes("driving_session/parking_state")) {
         await this.handleParkingState(deviceId, message as ParkingStateEvent);
       }
       // Check if this is a continuous driving time message
-      else if (topic.includes('driving_session/continuous_driving_time')) {
-        await this.handleContinuousDrivingTime(deviceId, message as DrivingTimeEvent);
+      else if (topic.includes("driving_session/continuous_driving_time")) {
+        await this.handleContinuousDrivingTime(
+          deviceId,
+          message as DrivingTimeEvent
+        );
       }
       // Check if this is a vehicle operation manager message
-      else if (topic.includes('driving_session/vehicle_operation_manager')) {
-        await this.handleVehicleOperationManager(deviceId, message as VehicleOperationManagerEvent);
+      else if (topic.includes("driving_session/vehicle_operation_manager")) {
+        await this.handleVehicleOperationManager(
+          deviceId,
+          message as VehicleOperationManagerEvent
+        );
       }
-      else {
+      // Check if this is a DMS (Driver Monitoring System) message
+      else if (topic.includes("/DMS")) {
+        await this.handleDMS(deviceId, message as DMSPayload);
+      }
+      // Check if this is an OMS (Operational Monitoring System) message
+      else if (topic.includes("/OMS")) {
+        await this.handleOMS(deviceId, message as OMSPayload);
+      }
+      // Check if this is a streaming event message
+      else if (topic.includes("driving_session/streamming_event")) {
+        await this.handleStreamingEvent(
+          deviceId,
+          message as StreamingEventPayload
+        );
+      } else {
         // Handle generic event
         const event: EdgeEvent = {
           device_id: deviceId,
           timestamp: new Date(message.timestamp || Date.now()),
-          event_type: message.event_type || 'unknown',
+          event_type: message.event_type || "unknown",
           data: message.data || message,
           metadata: message.metadata,
         };
 
-        logger.debug(`Received event from device: ${deviceId}, type: ${event.event_type}`);
+        logger.debug(
+          `Received event from device: ${deviceId}, type: ${event.event_type}`
+        );
 
         // Process event in parallel
         await Promise.allSettled([
@@ -157,9 +212,8 @@ class MQTTService {
         // Add to batch for database insertion
         this.addToBatch(event);
       }
-
     } catch (error) {
-      logger.error('Error handling MQTT message:', error);
+      logger.error("Error handling MQTT message:", error);
     }
   }
 
@@ -169,7 +223,9 @@ class MQTTService {
   private lastGPSTimestampByDevice: Map<string, number> = new Map();
   private async handleGPSData(deviceId: string, payload: GPSDataPayload): Promise<void> {
     try {
-      logger.debug(`Received GPS data from device: ${deviceId}, points: ${payload.gps_data.length}`);
+      logger.debug(
+        `Received GPS data from device: ${deviceId}, points: ${payload.gps_data.length}`
+      );
 
       // Lọc các điểm GPS nếu không phải bản ghi đầu tiên
       let filteredPayload = payload;
@@ -205,7 +261,10 @@ class MQTTService {
   /**
    * Cache GPS data in Redis
    */
-  private async cacheGPSData(deviceId: string, payload: GPSDataPayload): Promise<void> {
+  private async cacheGPSData(
+    deviceId: string,
+    payload: GPSDataPayload
+  ): Promise<void> {
     try {
       // Get the latest GPS data point (last item in the array)
       const latestGPSPoint = payload.gps_data[payload.gps_data.length - 1];
@@ -219,7 +278,7 @@ class MQTTService {
         await redisClient.cacheGPSData(deviceId, cacheData, this.ttlGPSCache);
       }
     } catch (error) {
-      logger.error('Error caching GPS data:', error);
+      logger.error("Error caching GPS data:", error);
     }
   }
 
@@ -243,48 +302,66 @@ class MQTTService {
         socketIOServer.emit(deviceId, streamData);
 
         // Also emit to generic GPS channel for monitoring all devices
-        socketIOServer.emit('gps:all', streamData);
+        socketIOServer.emit("gps:all", streamData);
 
         // Emit raw GPS data
-        socketIOServer.emit('gps:raw', streamData);
+        socketIOServer.emit("gps:raw", streamData);
       }
     } catch (error) {
-      logger.error('Error streaming raw GPS data:', error);
+      logger.error("Error streaming raw GPS data:", error);
     }
   }
 
   /**
    * Store GPS data in TimescaleDB
    */
-  private async storeGPSData(deviceId: string, payload: GPSDataPayload): Promise<void> {
+  private async storeGPSData(
+    deviceId: string,
+    payload: GPSDataPayload
+  ): Promise<void> {
     try {
       await timescaleDB.insertGPSDataBatch(deviceId, payload);
     } catch (error) {
-      logger.error('Error storing GPS data:', error);
+      logger.error("Error storing GPS data:", error);
     }
   }
 
   /**
    * Handle driver request messages
    */
-  private async handleDriverRequest(deviceId: string, payload: DriverRequestPayload): Promise<void> {
+  private async handleDriverRequest(
+    deviceId: string,
+    payload: DriverRequestPayload
+  ): Promise<void> {
     try {
       logger.info(`Received driver request from device: ${deviceId}`);
 
       // Validate: At least one of driver_image or driver_rfid must be present
-      const hasImage = payload.request_data.driver_image && payload.request_data.driver_image !== 'None';
-      const hasRfid = payload.request_data.driver_rfid && payload.request_data.driver_rfid !== 'None';
+      const hasImage =
+        payload.request_data.driver_image &&
+        payload.request_data.driver_image !== "None";
+      const hasRfid =
+        payload.request_data.driver_rfid &&
+        payload.request_data.driver_rfid !== "None";
 
       if (!hasImage && !hasRfid) {
-        logger.error('Invalid driver request: Neither driver_image nor driver_rfid provided');
+        logger.error(
+          "Invalid driver request: Neither driver_image nor driver_rfid provided"
+        );
         return;
       }
 
       // Log which method is being used
       if (hasRfid) {
-        logger.info(`Driver identification by RFID: ${payload.request_data.driver_rfid}`);
+        logger.info(
+          `Driver identification by RFID: ${payload.request_data.driver_rfid}`
+        );
       } else if (hasImage) {
-        logger.info(`Driver identification by Image (length: ${payload.request_data.driver_image?.length || 0} chars)`);
+        logger.info(
+          `Driver identification by Image (length: ${
+            payload.request_data.driver_image?.length || 0
+          } chars)`
+        );
       }
 
       // Get driver info from API
@@ -294,8 +371,8 @@ class MQTTService {
         // TODO: Implement actual RFID/Image matching to get driver UUID
         // For now, use predefined UUIDs for testing
         const driverUuid = hasRfid
-          ? '880e8400-e29b-41d4-a716-446655440001'  // RFID driver
-          : '880e8400-e29b-41d4-a716-446655440002'; // Image driver
+          ? "880e8400-e29b-41d4-a716-446655440001" // RFID driver
+          : "880e8400-e29b-41d4-a716-446655440002"; // Image driver
 
         logger.info(`Fetching driver info from API for UUID: ${driverUuid}`);
         driverData = await driverService.getDriverById(driverUuid);
@@ -306,13 +383,13 @@ class MQTTService {
           driverData = driverService.getMockDriverInfo(hasRfid ? 0 : 1);
         }
       } catch (error) {
-        logger.error('Error fetching driver from API, using mock data:', error);
+        logger.error("Error fetching driver from API, using mock data:", error);
         driverData = driverService.getMockDriverInfo(hasRfid ? 0 : 1);
       }
 
       // Build driver info payload
       // Convert to UTC+7 milliseconds
-      const utc7Ms = Date.now() + (7 * 60 * 60 * 1000);
+      const utc7Ms = Date.now() + 7 * 60 * 60 * 1000;
 
       const driverInfo: DriverInfoPayload = {
         time_stamp: utc7Ms,
@@ -327,28 +404,30 @@ class MQTTService {
       await this.publishDriverInfo(deviceId, driverInfo);
 
       // Stream to Socket.IO for monitoring
-      socketIOServer.emit('driver:request', {
+      socketIOServer.emit("driver:request", {
         device_id: deviceId,
         ...payload,
       });
 
-      socketIOServer.emit('driver:info', {
+      socketIOServer.emit("driver:info", {
         device_id: deviceId,
         ...driverInfo,
       });
-
     } catch (error) {
-      logger.error('Error handling driver request:', error);
+      logger.error("Error handling driver request:", error);
     }
   }
 
   /**
    * Publish driver info to MQTT topic
    */
-  private async publishDriverInfo(deviceId: string, driverInfo: DriverInfoPayload): Promise<void> {
+  private async publishDriverInfo(
+    deviceId: string,
+    driverInfo: DriverInfoPayload
+  ): Promise<void> {
     try {
       if (!this.client) {
-        logger.error('MQTT client not connected');
+        logger.error("MQTT client not connected");
         return;
       }
 
@@ -363,14 +442,17 @@ class MQTTService {
         }
       });
     } catch (error) {
-      logger.error('Error publishing driver info:', error);
+      logger.error("Error publishing driver info:", error);
     }
   }
 
   /**
    * Handle driver check-in messages
    */
-  private async handleDriverCheckIn(deviceId: string, payload: DriverCheckInPayload): Promise<void> {
+  private async handleDriverCheckIn(
+    deviceId: string,
+    payload: DriverCheckInPayload
+  ): Promise<void> {
     try {
       logger.info(`Received driver check-in from device: ${deviceId}`);
 
@@ -378,15 +460,20 @@ class MQTTService {
       const driverInfo = checkInData.driver_information;
       const location = checkInData.CheckInLocation;
 
-      logger.info(`Driver: ${driverInfo.driver_name} (${driverInfo.driver_license_number})`);
+      logger.info(
+        `Driver: ${driverInfo.driver_name} (${driverInfo.driver_license_number})`
+      );
 
       // Convert Unix milliseconds to UTC+7
-      const checkInTimestampMs = checkInData.check_in_timestamp + (7 * 60 * 60 * 1000);
-      logger.info(`Check-in time: ${new Date(checkInTimestampMs).toISOString()}`);
+      const checkInTimestampMs =
+        checkInData.check_in_timestamp + 7 * 60 * 60 * 1000;
+      logger.info(
+        `Check-in time: ${new Date(checkInTimestampMs).toISOString()}`
+      );
       logger.info(`Location: ${location.latitude}, ${location.longitude}`);
 
       // Stream to Socket.IO for real-time monitoring
-      socketIOServer.emit('driver:checkin', {
+      socketIOServer.emit("driver:checkin", {
         device_id: deviceId,
         driver_name: driverInfo.driver_name,
         driver_license: driverInfo.driver_license_number,
@@ -402,7 +489,7 @@ class MQTTService {
       });
 
       // Emit to specific device room
-      socketIOServer.to(`device:${deviceId}`).emit('device:checkin', {
+      socketIOServer.to(`device:${deviceId}`).emit("device:checkin", {
         device_id: deviceId,
         ...payload,
       });
@@ -413,7 +500,9 @@ class MQTTService {
 
       // If trip creation failed, try to get existing active trip
       if (!tripId) {
-        logger.info(`Trip creation failed, attempting to get existing active trip for ${deviceId}`);
+        logger.info(
+          `Trip creation failed, attempting to get existing active trip for ${deviceId}`
+        );
         const vehicleId = "770e8400-e29b-41d4-a716-446655440002"; // TODO: Map deviceId to vehicleId
         const existingTrip = await tripService.getLatestTrip(vehicleId);
         if (existingTrip && !existingTrip.endTime) {
@@ -441,15 +530,16 @@ class MQTTService {
             longitude: location.longitude,
             accuracy: location.accuracy,
           },
-          address: `Lat: ${location.latitude.toFixed(6)}, Lon: ${location.longitude.toFixed(6)}`,
+          address: `Lat: ${location.latitude.toFixed(
+            6
+          )}, Lon: ${location.longitude.toFixed(6)}`,
         },
         tripId
       );
 
       logger.info(`Driver check-in processed successfully for ${deviceId}`);
-
     } catch (error) {
-      logger.error('Error handling driver check-in:', error);
+      logger.error("Error handling driver check-in:", error);
     }
   }
 
@@ -457,7 +547,10 @@ class MQTTService {
    * Create a new trip when driver checks in
    * @returns tripId if trip was created successfully, undefined otherwise
    */
-  private async createTripForCheckIn(deviceId: string, checkInData: any): Promise<string | undefined> {
+  private async createTripForCheckIn(
+    deviceId: string,
+    checkInData: any
+  ): Promise<string | undefined> {
     try {
       logger.info(`Creating trip for device: ${deviceId}`);
 
@@ -467,17 +560,19 @@ class MQTTService {
 
       // TODO: Get driverId from driver_license_number
       // For now, use hardcoded UUID
-      const driverId = '880e8400-e29b-41d4-a716-446655440001';
+      const driverId = "880e8400-e29b-41d4-a716-446655440001";
 
       // Convert Unix milliseconds to UTC+7
-      const startTimeMs = checkInData.check_in_timestamp + (7 * 60 * 60 * 1000);
+      const startTimeMs = checkInData.check_in_timestamp + 7 * 60 * 60 * 1000;
       const startTime = new Date(startTimeMs).toISOString();
 
       // Generate trip number
       const tripNumber = tripService.generateTripNumber(deviceId);
 
       // Format start address from location
-      const startAddress = `Lat: ${checkInData.CheckInLocation.latitude.toFixed(6)}, Lon: ${checkInData.CheckInLocation.longitude.toFixed(6)}`;
+      const startAddress = `Lat: ${checkInData.CheckInLocation.latitude.toFixed(
+        6
+      )}, Lon: ${checkInData.CheckInLocation.longitude.toFixed(6)}`;
 
       // Create trip request
       const tripRequest = {
@@ -497,7 +592,7 @@ class MQTTService {
         logger.info(`Trip created successfully: ${trip.id}`);
 
         // Emit trip creation event via Socket.IO
-        socketIOServer.emit('trip:created', {
+        socketIOServer.emit("trip:created", {
           device_id: deviceId,
           trip_id: trip.id,
           trip_number: trip.tripNumber,
@@ -521,16 +616,19 @@ class MQTTService {
       }
 
       return undefined;
-
     } catch (error: any) {
-      logger.error('Error creating trip for check-in:', error.message);
+      logger.error("Error creating trip for check-in:", error.message);
 
       // If error is about ongoing trip, log but don't throw
-      if (error.message?.includes('chưa kết thúc')) {
-        logger.warn(`Vehicle ${deviceId} has ongoing trip. Check-in recorded but new trip not created.`);
+      if (error.message?.includes("chưa kết thúc")) {
+        logger.warn(
+          `Vehicle ${deviceId} has ongoing trip. Check-in recorded but new trip not created.`
+        );
       } else {
         // For other errors, still continue processing (don't block check-in)
-        logger.error('Failed to create trip, but check-in was recorded successfully');
+        logger.error(
+          "Failed to create trip, but check-in was recorded successfully"
+        );
       }
 
       return undefined;
@@ -541,16 +639,27 @@ class MQTTService {
    * Handle driver check-out confirm request
    * Find latest trip, if no end time, respond with is_confirm = true
    */
-  private async handleCheckOutConfirmRequest(deviceId: string, payload: CheckOutConfirmRequestPayload): Promise<void> {
+  private async handleCheckOutConfirmRequest(
+    deviceId: string,
+    payload: CheckOutConfirmRequestPayload
+  ): Promise<void> {
     try {
-      logger.info(`Received check-out confirm request from device: ${deviceId}`);
+      logger.info(
+        `Received check-out confirm request from device: ${deviceId}`
+      );
 
       const requestData = payload.request_data;
 
       // Validate request data (at least one of driver_image or driver_rfid required)
       if (!requestData.driver_image && !requestData.driver_rfid) {
-        logger.warn(`Invalid check-out confirm request from ${deviceId}: missing driver_image or driver_rfid`);
-        await this.publishCheckOutConfirmResponse(deviceId, payload.message_id, false);
+        logger.warn(
+          `Invalid check-out confirm request from ${deviceId}: missing driver_image or driver_rfid`
+        );
+        await this.publishCheckOutConfirmResponse(
+          deviceId,
+          payload.message_id,
+          false
+        );
         return;
       }
 
@@ -563,18 +672,28 @@ class MQTTService {
       const isConfirm = latestTrip !== null && !latestTrip.endTime;
 
       if (isConfirm) {
-        logger.info(`Ongoing trip found for ${deviceId}: ${latestTrip!.id}. Confirming check-out.`);
+        logger.info(
+          `Ongoing trip found for ${deviceId}: ${
+            latestTrip!.id
+          }. Confirming check-out.`
+        );
       } else if (latestTrip === null) {
         logger.warn(`No trip found for ${deviceId}. Cannot confirm check-out.`);
       } else {
-        logger.warn(`Latest trip for ${deviceId} already has end time. Cannot confirm check-out.`);
+        logger.warn(
+          `Latest trip for ${deviceId} already has end time. Cannot confirm check-out.`
+        );
       }
 
       // Publish confirmation response
-      await this.publishCheckOutConfirmResponse(deviceId, payload.message_id, isConfirm);
+      await this.publishCheckOutConfirmResponse(
+        deviceId,
+        payload.message_id,
+        isConfirm
+      );
 
       // Emit to Socket.IO
-      socketIOServer.emit('checkout:confirm:request', {
+      socketIOServer.emit("checkout:confirm:request", {
         device_id: deviceId,
         message_id: payload.message_id,
         is_confirm: isConfirm,
@@ -582,28 +701,38 @@ class MQTTService {
         trip_id: latestTrip?.id,
         time_stamp: payload.time_stamp,
       });
-
     } catch (error) {
-      logger.error('Error handling check-out confirm request:', error);
+      logger.error("Error handling check-out confirm request:", error);
       // On error, respond with is_confirm = false
-      await this.publishCheckOutConfirmResponse(deviceId, payload.message_id, false);
+      await this.publishCheckOutConfirmResponse(
+        deviceId,
+        payload.message_id,
+        false
+      );
     }
   }
 
   /**
    * Publish check-out confirm response to MQTT
    */
-  private async publishCheckOutConfirmResponse(deviceId: string, requestMessageId: string, isConfirm: boolean): Promise<void> {
+  private async publishCheckOutConfirmResponse(
+    deviceId: string,
+    requestMessageId: string,
+    isConfirm: boolean
+  ): Promise<void> {
     try {
       if (!this.client) {
-        logger.error('MQTT client not connected');
+        logger.error("MQTT client not connected");
         return;
       }
 
-      const responseTopic = config.mqtt.topics.checkoutConfirmResponse.replace('+', deviceId);
+      const responseTopic = config.mqtt.topics.checkoutConfirmResponse.replace(
+        "+",
+        deviceId
+      );
 
       // Convert to UTC+7 milliseconds
-      const utc7Ms = Date.now() + (7 * 60 * 60 * 1000);
+      const utc7Ms = Date.now() + 7 * 60 * 60 * 1000;
 
       const responsePayload: CheckOutConfirmResponsePayload = {
         time_stamp: utc7Ms,
@@ -619,15 +748,19 @@ class MQTTService {
         { qos: 1 },
         (err) => {
           if (err) {
-            logger.error(`Error publishing check-out confirm response to ${responseTopic}:`, err);
+            logger.error(
+              `Error publishing check-out confirm response to ${responseTopic}:`,
+              err
+            );
           } else {
-            logger.info(`Check-out confirm response sent to ${deviceId}: is_confirm=${isConfirm}`);
+            logger.info(
+              `Check-out confirm response sent to ${deviceId}: is_confirm=${isConfirm}`
+            );
           }
         }
       );
-
     } catch (error) {
-      logger.error('Error publishing check-out confirm response:', error);
+      logger.error("Error publishing check-out confirm response:", error);
     }
   }
 
@@ -635,7 +768,10 @@ class MQTTService {
    * Handle driver check-out
    * Update the latest trip with end time and duration
    */
-  private async handleDriverCheckOut(deviceId: string, payload: DriverCheckOutPayload): Promise<void> {
+  private async handleDriverCheckOut(
+    deviceId: string,
+    payload: DriverCheckOutPayload
+  ): Promise<void> {
     try {
       logger.info(`Received driver check-out from device: ${deviceId}`);
 
@@ -643,16 +779,21 @@ class MQTTService {
       const driverInfo = checkOutData.driver_information;
       const location = checkOutData.CheckOutLocation;
 
-      logger.info(`Driver: ${driverInfo.driver_name} (${driverInfo.driver_license_number})`);
+      logger.info(
+        `Driver: ${driverInfo.driver_name} (${driverInfo.driver_license_number})`
+      );
 
       // Convert Unix milliseconds to UTC+7
-      const checkOutTimestampMs = checkOutData.check_out_timestamp + (7 * 60 * 60 * 1000);
-      logger.info(`Check-out time: ${new Date(checkOutTimestampMs).toISOString()}`);
+      const checkOutTimestampMs =
+        checkOutData.check_out_timestamp + 7 * 60 * 60 * 1000;
+      logger.info(
+        `Check-out time: ${new Date(checkOutTimestampMs).toISOString()}`
+      );
       logger.info(`Working duration: ${checkOutData.working_duration} minutes`);
       logger.info(`Location: ${location.latitude}, ${location.longitude}`);
 
       // Stream to Socket.IO for real-time monitoring
-      socketIOServer.emit('driver:checkout', {
+      socketIOServer.emit("driver:checkout", {
         device_id: "deviceId",
         driver_name: driverInfo.driver_name,
         driver_license: driverInfo.driver_license_number,
@@ -669,7 +810,7 @@ class MQTTService {
       });
 
       // Emit to specific device room
-      socketIOServer.to(`device:${deviceId}`).emit('device:checkout', {
+      socketIOServer.to(`device:${deviceId}`).emit("device:checkout", {
         device_id: deviceId,
         ...payload,
       });
@@ -693,15 +834,16 @@ class MQTTService {
             longitude: location.longitude,
             accuracy: location.accuracy,
           },
-          address: `Lat: ${location.latitude.toFixed(6)}, Lon: ${location.longitude.toFixed(6)}`,
+          address: `Lat: ${location.latitude.toFixed(
+            6
+          )}, Lon: ${location.longitude.toFixed(6)}`,
         },
         tripId
       );
 
       logger.info(`Driver check-out processed successfully for ${deviceId}`);
-
     } catch (error) {
-      logger.error('Error handling driver check-out:', error);
+      logger.error("Error handling driver check-out:", error);
     }
   }
 
@@ -709,7 +851,10 @@ class MQTTService {
    * Update the latest trip with check-out data
    * @returns tripId if trip was updated successfully, undefined otherwise
    */
-  private async updateTripWithCheckOut(deviceId: string, checkOutData: any): Promise<string | undefined> {
+  private async updateTripWithCheckOut(
+    deviceId: string,
+    checkOutData: any
+  ): Promise<string | undefined> {
     try {
       logger.info(`Updating trip for device: ${deviceId} with check-out data`);
 
@@ -720,21 +865,27 @@ class MQTTService {
       const latestTrip = await tripService.getLatestTrip(vehicleId);
 
       if (!latestTrip) {
-        logger.warn(`No trip found for vehicle ${deviceId}. Cannot update with check-out data.`);
+        logger.warn(
+          `No trip found for vehicle ${deviceId}. Cannot update with check-out data.`
+        );
         return undefined;
       }
 
       if (latestTrip.endTime) {
-        logger.warn(`Latest trip ${latestTrip.id} already has end time. Cannot update with check-out data.`);
+        logger.warn(
+          `Latest trip ${latestTrip.id} already has end time. Cannot update with check-out data.`
+        );
         return latestTrip.id;
       }
 
       // Convert Unix milliseconds to UTC+7
-      const endTimeMs = checkOutData.check_out_timestamp + (7 * 60 * 60 * 1000);
+      const endTimeMs = checkOutData.check_out_timestamp + 7 * 60 * 60 * 1000;
       const endTime = new Date(endTimeMs).toISOString();
 
       // Format end address from location
-      const endAddress = `Lat: ${checkOutData.CheckOutLocation.latitude.toFixed(6)}, Lon: ${checkOutData.CheckOutLocation.longitude.toFixed(6)}`;
+      const endAddress = `Lat: ${checkOutData.CheckOutLocation.latitude.toFixed(
+        6
+      )}, Lon: ${checkOutData.CheckOutLocation.longitude.toFixed(6)}`;
 
       // Update trip with check-out data
       // updateTrip automatically preserves all existing fields (fetches existing trip first)
@@ -743,15 +894,17 @@ class MQTTService {
         endTime: endTime,
         endAddress: endAddress,
         durationMinutes: checkOutData.working_duration,
-        status: 'Completed',
+        status: "Completed",
       });
       // const updatedTrip = await tripService.endDrivingSession(vehicleId);
 
       if (updatedTrip) {
-        logger.info(` Trip ${latestTrip.id} updated successfully with check-out data`);
+        logger.info(
+          ` Trip ${latestTrip.id} updated successfully with check-out data`
+        );
 
         // Emit trip completion event via Socket.IO
-        socketIOServer.emit('trip:completed', {
+        socketIOServer.emit("trip:completed", {
           device_id: deviceId,
           trip_id: updatedTrip.id,
           trip_number: updatedTrip.tripNumber,
@@ -766,9 +919,8 @@ class MQTTService {
       }
 
       return latestTrip.id;
-
     } catch (error: any) {
-      logger.error('Error updating trip with check-out:', {
+      logger.error("Error updating trip with check-out:", {
         message: error.message,
         stack: error.stack,
       });
@@ -779,10 +931,17 @@ class MQTTService {
   /**
    * Handle parking state messages
    */
-  private async handleParkingState(deviceId: string, payload: ParkingStateEvent): Promise<void> {
+  private async handleParkingState(
+    deviceId: string,
+    payload: ParkingStateEvent
+  ): Promise<void> {
     try {
       logger.info(`Received parking state from device: ${deviceId}`);
-      logger.info(`Parking ID: ${payload.parking_id}, State: ${payload.parking_status === 0 ? 'PARKED' : 'MOVING'}, Duration: ${payload.parking_duration} seconds`);
+      logger.info(
+        `Parking ID: ${payload.parking_id}, State: ${
+          payload.parking_status === 0 ? "PARKED" : "MOVING"
+        }, Duration: ${payload.parking_duration} seconds`
+      );
 
       // TODO: Map deviceId to vehicleId (UUID from API)
       const vehicleId = "770e8400-e29b-41d4-a716-446655440002";
@@ -791,12 +950,14 @@ class MQTTService {
       const latestTrip = await tripService.getLatestTrip(vehicleId);
 
       if (!latestTrip) {
-        logger.info(`No active trip found for vehicle ${vehicleId}. Cannot update with parking state.`);
+        logger.info(
+          `No active trip found for vehicle ${vehicleId}. Cannot update with parking state.`
+        );
         return;
       }
 
       // Convert Unix milliseconds to UTC+7
-      const timestampMs = payload.time_stamp + (7 * 60 * 60 * 1000);
+      const timestampMs = payload.time_stamp + 7 * 60 * 60 * 1000;
       const timestamp = new Date(timestampMs).toISOString();
 
       // Handle parking state
@@ -836,13 +997,19 @@ class MQTTService {
 
         // Cache the MongoDB event ID for later update
         if (parkingEvent && parkingEvent.id) {
-          await redisClient.cacheParkingEventId(payload.parking_id, parkingEvent.id);
-          logger.info(`Cached parking event ID: ${parkingEvent.id} for parking ${payload.parking_id}`);
+          await redisClient.cacheParkingEventId(
+            payload.parking_id,
+            parkingEvent.id
+          );
+          logger.info(
+            `Cached parking event ID: ${parkingEvent.id} for parking ${payload.parking_id}`
+          );
         }
-
       } else {
         // Vehicle MOVING - Update existing parking event
-        logger.info(`Vehicle ${deviceId} resumed movement. Updating parking event.`);
+        logger.info(
+          `Vehicle ${deviceId} resumed movement. Updating parking event.`
+        );
 
         // Cache vehicle state in Redis
         await redisClient.cacheDeviceState(deviceId, {
@@ -863,31 +1030,37 @@ class MQTTService {
         });
 
         // Get the cached parking event MongoDB ID
-        const parkingEventId = await redisClient.getParkingEventId(payload.parking_id);
+        const parkingEventId = await redisClient.getParkingEventId(
+          payload.parking_id
+        );
 
+        
         if (parkingEventId) {
           // Update the parking event with end time and duration
-          await eventLogService.updateParkingEndEvent(
-            parkingEventId,
-            {
-              parkingDuration: payload.parking_duration,
-              endTime: timestamp,
-            }
-          );
+          await eventLogService.updateParkingEndEvent(parkingEventId, {
+            parkingDuration: payload.parking_duration,
+            endTime: timestamp,
+          });
 
           // Delete the cached event ID
           await redisClient.deleteParkingEventId(payload.parking_id);
-          logger.info(`Updated and cleaned up parking event: ${parkingEventId}`);
+          logger.info(
+            `Updated and cleaned up parking event: ${parkingEventId}`
+          );
         } else {
-          logger.warn(`No cached parking event ID found for parking ${payload.parking_id}. Cannot update event.`);
+          logger.warn(
+            `No cached parking event ID found for parking ${payload.parking_id}. Cannot update event.`
+          );
         }
       }
 
       // Count total parking events in this session
-      const parkingCount = await eventLogService.countParkingEventsBySession(latestTrip.id);
+      const parkingCount = await eventLogService.countParkingEventsBySession(
+        latestTrip.id
+      );
 
       // Stream to Socket.IO for real-time monitoring
-      socketIOServer.emit('parking:state', {
+      socketIOServer.emit("parking:state", {
         device_id: deviceId,
         parking_id: payload.parking_id,
         parking_state: payload.parking_status,
@@ -899,20 +1072,26 @@ class MQTTService {
         time_stamp: payload.time_stamp,
       });
 
-      logger.info(`Parking state processed successfully for ${deviceId}. Total parking events in session: ${parkingCount}`);
-
+      logger.info(
+        `Parking state processed successfully for ${deviceId}. Total parking events in session: ${parkingCount}`
+      );
     } catch (error) {
-      logger.error('Error handling parking state:', error);
+      logger.error("Error handling parking state:", error);
     }
   }
 
   /**
    * Handle continuous driving time messages
    */
-  private async handleContinuousDrivingTime(deviceId: string, payload: DrivingTimeEvent): Promise<void> {
+  private async handleContinuousDrivingTime(
+    deviceId: string,
+    payload: DrivingTimeEvent
+  ): Promise<void> {
     try {
       logger.info(`Received continuous driving time from device: ${deviceId}`);
-      logger.info(`Continuous driving time: ${payload.continuous_driving_time} seconds, Total driving duration: ${payload.driving_duration} seconds`);
+      logger.info(
+        `Continuous driving time: ${payload.continuous_driving_time} seconds, Total driving duration: ${payload.driving_duration} seconds`
+      );
 
       // TODO: Map deviceId to vehicleId (UUID from API)
       const vehicleId = "770e8400-e29b-41d4-a716-446655440002";
@@ -921,7 +1100,9 @@ class MQTTService {
       const latestTrip = await tripService.getLatestTrip(vehicleId);
 
       if (!latestTrip) {
-        logger.info(`No active trip found for vehicle ${vehicleId}. Cannot update with continuous driving time.`);
+        logger.info(
+          `No active trip found for vehicle ${vehicleId}. Cannot update with continuous driving time.`
+        );
         return;
       }
 
@@ -932,10 +1113,12 @@ class MQTTService {
         durationSeconds: payload.driving_duration,
       });
 
-      logger.info(`Trip ${latestTrip.id} updated with continuous driving time: ${payload.continuous_driving_time}s`);
+      logger.info(
+        `Trip ${latestTrip.id} updated with continuous driving time: ${payload.continuous_driving_time}s`
+      );
 
       // Stream to Socket.IO for real-time monitoring
-      socketIOServer.emit('driving:time', {
+      socketIOServer.emit("driving:time", {
         device_id: deviceId,
         continuous_driving_time: payload.continuous_driving_time,
         driving_duration: payload.driving_duration,
@@ -946,16 +1129,17 @@ class MQTTService {
       });
 
       // Emit to specific device room
-      socketIOServer.to(`device:${deviceId}`).emit('device:driving:time', {
+      socketIOServer.to(`device:${deviceId}`).emit("device:driving:time", {
         device_id: deviceId,
         ...payload,
         trip_id: latestTrip.id,
       });
 
-      logger.info(`Continuous driving time processed successfully for ${deviceId}`);
-
+      logger.info(
+        `Continuous driving time processed successfully for ${deviceId}`
+      );
     } catch (error) {
-      logger.error('Error handling continuous driving time:', error);
+      logger.error("Error handling continuous driving time:", error);
     }
   }
 
@@ -963,9 +1147,14 @@ class MQTTService {
    * Handle vehicle operation manager messages (violations)
    * Each message contains only ONE violation at a time (non-violating values are 0)
    */
-  private async handleVehicleOperationManager(deviceId: string, payload: VehicleOperationManagerEvent): Promise<void> {
+  private async handleVehicleOperationManager(
+    deviceId: string,
+    payload: VehicleOperationManagerEvent
+  ): Promise<void> {
     try {
-      logger.info(`Received vehicle operation manager event from device: ${deviceId}`);
+      logger.info(
+        `Received vehicle operation manager event from device: ${deviceId}`
+      );
 
       // TODO: Map deviceId to vehicleId (UUID from API)
       const vehicleId = "770e8400-e29b-41d4-a716-446655440002";
@@ -974,7 +1163,9 @@ class MQTTService {
       const latestTrip = await tripService.getLatestTrip(vehicleId);
 
       if (!latestTrip) {
-        logger.info(`No active trip found for vehicle ${vehicleId}. Cannot log violation.`);
+        logger.info(
+          `No active trip found for vehicle ${vehicleId}. Cannot log violation.`
+        );
         return;
       }
 
@@ -982,22 +1173,26 @@ class MQTTService {
       const violations = payload.violation_operation;
 
       // Determine which violation is active (non-zero value)
-      let violationType: 'CONTINUOUS_DRIVING' | 'PARKING_DURATION' | 'SPEED_LIMIT' | null = null;
+      let violationType:
+        | "CONTINUOUS_DRIVING"
+        | "PARKING_DURATION"
+        | "SPEED_LIMIT"
+        | null = null;
       let violationValue = 0;
-      let violationUnit = '';
+      let violationUnit = "";
 
       if (violations.continuous_driving_time_violate > 0) {
-        violationType = 'CONTINUOUS_DRIVING';
+        violationType = "CONTINUOUS_DRIVING";
         violationValue = violations.continuous_driving_time_violate;
-        violationUnit = 'minutes';
+        violationUnit = "minutes";
       } else if (violations.parking_duration_violate > 0) {
-        violationType = 'PARKING_DURATION';
+        violationType = "PARKING_DURATION";
         violationValue = violations.parking_duration_violate;
-        violationUnit = 'minutes';
+        violationUnit = "minutes";
       } else if (violations.speed_limit_violate > 0) {
-        violationType = 'SPEED_LIMIT';
+        violationType = "SPEED_LIMIT";
         violationValue = violations.speed_limit_violate;
-        violationUnit = 'km/h';
+        violationUnit = "km/h";
       }
 
       // If no violation is detected, log and return
@@ -1021,21 +1216,25 @@ class MQTTService {
         latestTrip.id
       );
 
-      logger.info(`Violation logged: ${violationType} = ${violationValue} ${violationUnit}`);
+      logger.info(
+        `Violation logged: ${violationType} = ${violationValue} ${violationUnit}`
+      );
 
       // Count speed violations if this is a speed violation
       let speedViolationCount = 0;
-      if (violationType === 'SPEED_LIMIT') {
-        speedViolationCount = await eventLogService.countSpeedViolationsBySession(latestTrip.id);
+      if (violationType === "SPEED_LIMIT") {
+        speedViolationCount =
+          await eventLogService.countSpeedViolationsBySession(latestTrip.id);
       }
 
       // Emit to Socket.IO - only the active violation, others are 0
-      socketIOServer.emit('violation:detected', {
+      socketIOServer.emit("violation:detected", {
         device_id: deviceId,
         trip_id: latestTrip.id,
         trip_number: latestTrip.tripNumber,
         violation_type: violationType,
-        continuous_driving_time_violate: violations.continuous_driving_time_violate,
+        continuous_driving_time_violate:
+          violations.continuous_driving_time_violate,
         parking_duration_violate: violations.parking_duration_violate,
         speed_limit_violate: violations.speed_limit_violate,
         speed_violation_count: speedViolationCount, // Only count speed violations
@@ -1044,7 +1243,7 @@ class MQTTService {
       });
 
       // Emit to specific device room
-      socketIOServer.to(`device:${deviceId}`).emit('device:violation', {
+      socketIOServer.to(`device:${deviceId}`).emit("device:violation", {
         device_id: deviceId,
         violation_type: violationType,
         violation_value: violationValue,
@@ -1055,10 +1254,346 @@ class MQTTService {
         time_stamp: payload.time_stamp,
       });
 
-      logger.info(`Vehicle operation violation processed successfully for ${deviceId}${violationType === 'SPEED_LIMIT' ? `. Speed violations in session: ${speedViolationCount}` : ''}`);
-
+      logger.info(
+        `Vehicle operation violation processed successfully for ${deviceId}${
+          violationType === "SPEED_LIMIT"
+            ? `. Speed violations in session: ${speedViolationCount}`
+            : ""
+        }`
+      );
     } catch (error) {
-      logger.error('Error handling vehicle operation manager:', error);
+      logger.error("Error handling vehicle operation manager:", error);
+    }
+  }
+
+  /**
+   * Handle DMS (Driver Monitoring System) messages
+   * Processes driver behavior violations with location and image data
+   */
+  private async handleDMS(
+    deviceId: string,
+    payload: DMSPayload
+  ): Promise<void> {
+    try {
+      logger.info(`Received DMS data from device: ${deviceId}`);
+
+      const violationInfo = payload.violate_infomation_DMS;
+      const driverInfo = payload.driver_information;
+
+      // Map behavior code to string name
+      const behaviorNames = ['None', 'PhoneUse', 'Drowness', 'Smoking', 'Unfocus', 'Handoff'];
+      const behaviorName = behaviorNames[violationInfo.Violation_DMS] || 'Unknown';
+
+      logger.info(
+        `DMS Violation - Driver: ${driverInfo.driver_name} (${driverInfo.driver_license_number})`
+      );
+      logger.info(
+        `Behavior: ${behaviorName} (${violationInfo.Violation_DMS}), Speed: ${violationInfo.speed} km/h`
+      );
+      logger.info(
+        `Location: ${violationInfo.latitude}, ${violationInfo.longitude}`
+      );
+
+      // Upload image to MinIO (fleet-snapshots bucket, no subfolder)
+      let imageUrl = "";
+      try {
+        if (violationInfo.image_data && violationInfo.image_data !== "None") {
+          // Generate unique filename without subfolder: device_behavior_timestamp.png
+          const behaviorSlug = behaviorName.toLowerCase();
+          const fileName = `${deviceId}_${behaviorSlug}_${payload.time_stamp}.png`;
+
+          // Upload to MinIO
+          imageUrl = await minioClient.uploadImageFromBase64(
+            violationInfo.image_data,
+            fileName,
+            "image/png"
+          );
+
+          logger.info(`DMS image uploaded to MinIO: ${imageUrl}`);
+        }
+      } catch (uploadError) {
+        logger.error("Error uploading DMS image to MinIO:", uploadError);
+        // Continue processing even if image upload fails
+      }
+
+      // TODO: Map deviceId to vehicleId (UUID from API)
+      const vehicleId = "770e8400-e29b-41d4-a716-446655440002";
+
+      // Get latest trip
+      const latestTrip = await tripService.getLatestTrip(vehicleId);
+
+      if (!latestTrip) {
+        logger.info(
+          `No active trip found for vehicle ${vehicleId}. Logging DMS event without trip.`
+        );
+      }
+
+      // Convert Unix milliseconds to UTC+7
+      const timestampMs = payload.time_stamp + 7 * 60 * 60 * 1000;
+      const timestamp = new Date(timestampMs).toISOString();
+
+      const gpsTimestampMs = violationInfo.gps_timestamp + 7 * 60 * 60 * 1000;
+      const gpsTimestamp = new Date(gpsTimestampMs).toISOString();
+
+      // Log DMS violation event with image URL
+      const eventId = `dms_${deviceId}_${payload.message_id}`;
+      await eventLogService.logDMSEvent(
+        eventId,
+        vehicleId,
+        {
+          timestamp,
+          messageId: payload.message_id,
+          behaviorViolate: behaviorName,
+          speed: violationInfo.speed,
+          location: {
+            latitude: violationInfo.latitude,
+            longitude: violationInfo.longitude,
+            gpsTimestamp,
+          },
+          imageUrl: imageUrl, // Send MinIO URL instead of base64
+          driverName: driverInfo.driver_name,
+          driverLicenseNumber: driverInfo.driver_license_number,
+        },
+        latestTrip?.id
+      );
+
+      logger.info(`DMS violation logged: ${behaviorName} (${violationInfo.Violation_DMS})`);
+
+      // Count total DMS violations in this session
+      let dmsViolationCount = 0;
+      if (latestTrip) {
+        dmsViolationCount = await eventLogService.countDMSViolationsBySession(
+          latestTrip.id
+        );
+      }
+
+      // Stream to Socket.IO for real-time monitoring with image URL
+      socketIOServer.emit("dms:violation", {
+        device_id: deviceId,
+        trip_id: latestTrip?.id,
+        trip_number: latestTrip?.tripNumber,
+        behavior_violate: violationInfo.Violation_DMS,
+        behavior_name: behaviorName,
+        speed: violationInfo.speed,
+        location: {
+          latitude: violationInfo.latitude,
+          longitude: violationInfo.longitude,
+          gps_timestamp: violationInfo.gps_timestamp,
+        },
+        driver_name: driverInfo.driver_name,
+        driver_license: driverInfo.driver_license_number,
+        image_url: imageUrl, // Send URL instead of base64
+        // dms_violation_count: dmsViolationCount,
+        message_id: payload.message_id,
+        time_stamp: payload.time_stamp,
+      });
+
+      // Emit to specific device room
+      socketIOServer.to(`device:${deviceId}`).emit("device:dms:violation", {
+        device_id: deviceId,
+        behavior_violate: violationInfo.Violation_DMS,
+        behavior_name: behaviorName,
+        speed: violationInfo.speed,
+        image_url: imageUrl, // Send URL instead of base64
+        // dms_violation_count: dmsViolationCount,
+        trip_id: latestTrip?.id,
+        message_id: payload.message_id,
+        time_stamp: payload.time_stamp,
+      });
+
+      logger.info(
+        `DMS violation processed successfully for ${deviceId}. Total violations in session: ${dmsViolationCount}`
+      );
+    } catch (error) {
+      logger.error("Error handling DMS data:", error);
+    }
+  }
+
+  /**
+   * Handle OMS (Operational Monitoring System) messages
+   * Processes operational behavior violations with location and image data
+   */
+  private async handleOMS(
+    deviceId: string,
+    payload: OMSPayload
+  ): Promise<void> {
+    try {
+      logger.info(`Received OMS data from device: ${deviceId}`);
+
+      const violationInfo = payload.violate_infomation_OMS;
+      const driverInfo = payload.driver_information;
+
+      // Map behavior code to string name - OMS only has 2 values
+      const behaviorNames = ['None', 'Unfasten_seat_belt'];
+      const behaviorName = behaviorNames[violationInfo.Violation_OMS] || 'Unknown';
+
+      logger.info(
+        `OMS Violation - Driver: ${driverInfo.driver_name} (${driverInfo.driver_license_number})`
+      );
+      logger.info(
+        `Behavior: ${behaviorName} (${violationInfo.Violation_OMS}), Speed: ${violationInfo.speed} km/h`
+      );
+      logger.info(
+        `Location: ${violationInfo.latitude}, ${violationInfo.longitude}`
+      );
+
+      // Upload image to MinIO (fleet-snapshots bucket, no subfolder)
+      let imageUrl = "";
+      try {
+        if (violationInfo.image_data && violationInfo.image_data !== "None") {
+          // Generate unique filename without subfolder: device_behavior_timestamp.png
+          const behaviorSlug = behaviorName.toLowerCase();
+          const fileName = `${deviceId}_${behaviorSlug}_${payload.time_stamp}.png`;
+
+          // Upload to MinIO
+          imageUrl = await minioClient.uploadImageFromBase64(
+            violationInfo.image_data,
+            fileName,
+            "image/png"
+          );
+
+          logger.info(`OMS image uploaded to MinIO: ${imageUrl}`);
+        }
+      } catch (uploadError) {
+        logger.error("Error uploading OMS image to MinIO:", uploadError);
+        // Continue processing even if image upload fails
+      }
+
+      // TODO: Map deviceId to vehicleId (UUID from API)
+      const vehicleId = "770e8400-e29b-41d4-a716-446655440002";
+
+      // Get latest trip
+      const latestTrip = await tripService.getLatestTrip(vehicleId);
+
+      if (!latestTrip) {
+        logger.info(
+          `No active trip found for vehicle ${vehicleId}. Logging OMS event without trip.`
+        );
+      }
+
+      // Convert Unix milliseconds to UTC+7
+      const timestampMs = payload.time_stamp + 7 * 60 * 60 * 1000;
+      const timestamp = new Date(timestampMs).toISOString();
+
+      const gpsTimestampMs = violationInfo.gps_timestamp + 7 * 60 * 60 * 1000;
+      const gpsTimestamp = new Date(gpsTimestampMs).toISOString();
+
+      // Log OMS violation event with image URL
+      const eventId = `oms_${deviceId}_${payload.message_id}`;
+      await eventLogService.logDMSEvent(
+        eventId,
+        vehicleId,
+        {
+          timestamp,
+          messageId: payload.message_id,
+          behaviorViolate: behaviorName,
+          speed: violationInfo.speed,
+          location: {
+            latitude: violationInfo.latitude,
+            longitude: violationInfo.longitude,
+            gpsTimestamp,
+          },
+          imageUrl: imageUrl, // Send MinIO URL instead of base64
+          driverName: driverInfo.driver_name,
+          driverLicenseNumber: driverInfo.driver_license_number,
+        },
+        latestTrip?.id
+      );
+
+      logger.info(`OMS violation logged: ${behaviorName} (${violationInfo.Violation_OMS})`);
+
+      // Count total OMS violations in this session
+      let omsViolationCount = 0;
+      if (latestTrip) {
+        omsViolationCount = await eventLogService.countDMSViolationsBySession(
+          latestTrip.id
+        );
+      }
+
+      // Stream to Socket.IO for real-time monitoring with image URL
+      socketIOServer.emit("oms:violation", {
+        device_id: deviceId,
+        trip_id: latestTrip?.id,
+        trip_number: latestTrip?.tripNumber,
+        behavior_violate: violationInfo.Violation_OMS,
+        behavior_name: behaviorName,
+        speed: violationInfo.speed,
+        location: {
+          latitude: violationInfo.latitude,
+          longitude: violationInfo.longitude,
+          gps_timestamp: violationInfo.gps_timestamp,
+        },
+        driver_name: driverInfo.driver_name,
+        driver_license: driverInfo.driver_license_number,
+        image_url: imageUrl, // Send URL instead of base64
+        // oms_violation_count: omsViolationCount,
+        message_id: payload.message_id,
+        time_stamp: payload.time_stamp,
+      });
+
+      // Emit to specific device room
+      socketIOServer.to(`device:${deviceId}`).emit("device:oms:violation", {
+        device_id: deviceId,
+        behavior_violate: violationInfo.Violation_OMS,
+        behavior_name: behaviorName,
+        speed: violationInfo.speed,
+        image_url: imageUrl, // Send URL instead of base64
+        // oms_violation_count: omsViolationCount,
+        trip_id: latestTrip?.id,
+        message_id: payload.message_id,
+        time_stamp: payload.time_stamp,
+      });
+
+      logger.info(
+        `OMS violation processed successfully for ${deviceId}. Total violations in session: ${omsViolationCount}`
+      );
+    } catch (error) {
+      logger.error("Error handling OMS data:", error);
+    }
+  }
+
+  /**
+   * Handle streaming event messages
+   * This handler receives streaming requests from edge devices
+   */
+  private async handleStreamingEvent(
+    deviceId: string,
+    payload: StreamingEventPayload
+  ): Promise<void> {
+    try {
+      logger.info(`Received streaming event from device: ${deviceId}`);
+
+      const stateNames = ["Oms", "Dms", "Dash", "Off"];
+      const stateName = stateNames[payload.streamming_state] || "Unknown";
+
+      logger.info(
+        `Streaming state: ${stateName} (${payload.streamming_state})`
+      );
+      logger.info(`Message ID: ${payload.message_id}`);
+      logger.info(`Timestamp: ${payload.time_stamp}`);
+
+      // Stream to Socket.IO for real-time monitoring
+      socketIOServer.emit("streaming:event", {
+        device_id: deviceId,
+        streaming_state: payload.streamming_state,
+        streaming_state_name: stateName,
+        message_id: payload.message_id,
+        time_stamp: payload.time_stamp,
+        timestamp: new Date().toISOString(),
+      });
+
+      // Emit to specific device room
+      socketIOServer.to(`device:${deviceId}`).emit("device:streaming:event", {
+        device_id: deviceId,
+        streaming_state: payload.streamming_state,
+        streaming_state_name: stateName,
+        message_id: payload.message_id,
+        time_stamp: payload.time_stamp,
+      });
+
+      logger.info(`Streaming event processed successfully for ${deviceId}`);
+    } catch (error) {
+      logger.error("Error handling streaming event:", error);
     }
   }
 
@@ -1072,7 +1607,7 @@ class MQTTService {
         redisClient.cacheLatestEvent(event),
       ]);
     } catch (error) {
-      logger.error('Error caching event:', error);
+      logger.error("Error caching event:", error);
     }
   }
 
@@ -1082,12 +1617,14 @@ class MQTTService {
   private streamEvent(event: EdgeEvent): void {
     try {
       // Broadcast to all connected clients
-      socketIOServer.emit('edge:event', event);
+      socketIOServer.emit("edge:event", event);
 
       // Emit to room for specific device
-      socketIOServer.to(`device:${event.device_id}`).emit('edge:device:event', event);
+      socketIOServer
+        .to(`device:${event.device_id}`)
+        .emit("edge:device:event", event);
     } catch (error) {
-      logger.error('Error streaming event:', error);
+      logger.error("Error streaming event:", error);
     }
   }
 
@@ -1122,19 +1659,68 @@ class MQTTService {
       await timescaleDB.insertEventsBatch(batch);
       logger.info(`Flushed batch of ${batch.length} events to database`);
     } catch (error) {
-      logger.error('Error flushing batch to database:', error);
+      logger.error("Error flushing batch to database:", error);
       // Optionally: implement retry logic or dead-letter queue
     }
   }
 
-    /**
+  /**
+   * Public method to publish streaming request
+   */
+  public async publishStreamingRequest(
+    deviceId: string,
+    streamingState: 0 | 1 | 2 | 3
+  ): Promise<{ success: boolean; error?: string }> {
+    try {
+      if (!this.client) {
+        const errorMsg = "MQTT client not connected";
+        logger.error(errorMsg);
+        return { success: false, error: errorMsg };
+      }
+
+      const topic = `fms/${deviceId}/driving_session/streamming_event`;
+      const message = {
+        time_stamp: 0,
+        message_id: "None",
+        streamming_state: streamingState,
+      };
+
+      const payload = JSON.stringify(message);
+
+      return new Promise((resolve) => {
+        this.client!.publish(
+          topic,
+          payload,
+          { qos: 2, retain: false },
+          (err) => {
+            if (err) {
+              logger.error(
+                `Failed to publish streaming request to ${topic}:`,
+                err
+              );
+              resolve({ success: false, error: err.message });
+            } else {
+              logger.info(`Published streaming request to ${topic}:`, message);
+              resolve({ success: true });
+            }
+          }
+        );
+      });
+    } catch (error) {
+      const errorMsg = error instanceof Error ? error.message : "Unknown error";
+      logger.error("Error publishing streaming request:", error);
+      return { success: false, error: errorMsg };
+    }
+  }
+
+  /**
    * Disconnect MQTT client
    */
   disconnect(): void {
     if (this.client) {
       this.client.end();
       this.client = null;
-      logger.info('MQTT client disconnected');
+      logger.info("MQTT client disconnected");
     }
 
     // Clear GPS buffer timers

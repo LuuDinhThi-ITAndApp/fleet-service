@@ -529,6 +529,106 @@ class EventLogService {
       return null;
     }
   }
+
+  /**
+   * Log DMS (Driver Monitoring System) violation event
+   */
+  async logDMSEvent(
+    eventId: string,
+    vehicleId: string,
+    dmsData: {
+      timestamp: string;
+      messageId: string;
+      behaviorViolate: string;
+      speed: number;
+      location: { latitude: number; longitude: number; gpsTimestamp: string };
+      imageUrl: string;
+      driverName: string;
+      driverLicenseNumber: string;
+    },
+    tripId?: string
+  ): Promise<EventLogResponse | null> {
+    try {
+      // Create eventSubType with behavior (e.g., "drowsiness_detected", "phone_usage")
+      const behaviorSlug = dmsData.behaviorViolate.toLowerCase().replace(/\s+/g, '_');
+      const eventSubType = `driver_behavior_${behaviorSlug}`;
+
+      const eventLog: EventLogRequest = {
+        eventId: eventId,
+        sessionId: tripId,
+        eventType: 'vehicle_movement',
+        eventSubType: eventSubType,
+        vehicle: {
+          vehicleId: vehicleId,
+        },
+        driver: {
+          driverId: '', // TODO: Map license number to driver ID
+          name: dmsData.driverName,
+          licenseNumber: dmsData.driverLicenseNumber,
+        },
+        location: {
+          address: `Lat: ${dmsData.location.latitude.toFixed(6)}, Lon: ${dmsData.location.longitude.toFixed(6)}`,
+          coordinates: {
+            lat: dmsData.location.latitude,
+            lng: dmsData.location.longitude,
+          },
+        },
+        status: VehicleState.MOVING,
+        severity: Severity.WARNING,
+        tags: ['dms', 'violation', 'driver_behavior', dmsData.behaviorViolate.toLowerCase().replace(/\s+/g, '_')],
+        eventTimestamp: dmsData.timestamp,
+        correlationId: tripId,
+        metadata: {
+          sessionId: tripId,
+          notes: `DMS Violation: ${dmsData.behaviorViolate} at ${dmsData.speed} km/h`,
+          attachments: dmsData.imageUrl ? [dmsData.imageUrl] : [],
+        },
+      };
+
+      logger.info('Logging DMS violation event:', {
+        eventId,
+        behavior: dmsData.behaviorViolate,
+        speed: dmsData.speed,
+        driver: dmsData.driverName,
+      });
+
+      const response = await this.client.post<EventLogResponse>('/api/event-logs', eventLog);
+
+      if (response.data && response.data.id) {
+        logger.info(`DMS violation event logged successfully: ${response.data.id}`, {
+          sessionId: response.data.sessionId,
+          correlationId: response.data.correlationId,
+        });
+        return response.data;
+      }
+
+      return null;
+    } catch (error: any) {
+      logger.error('Error logging DMS violation event:', error.message);
+      // Don't throw - event logging should not block the main flow
+      return null;
+    }
+  }
+
+  /**
+   * Count DMS violations for a specific session/trip
+   */
+  async countDMSViolationsBySession(sessionId: string): Promise<number> {
+    try {
+      const response = await this.client.get<{ total: number }>(
+        `/api/event-logs/count?sessionId=${sessionId}&eventType=vehicle_movement&eventSubType=driver_behavior_violation`
+      );
+
+      if (response.data && typeof response.data.total === 'number') {
+        return response.data.total;
+      }
+
+      return 0;
+    } catch (error: any) {
+      logger.error('Error counting DMS violations:', error.message);
+      return 0;
+    }
+  }
 }
 
 export const eventLogService = new EventLogService();
