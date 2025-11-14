@@ -223,9 +223,7 @@ class MQTTService {
   private lastGPSTimestampByDevice: Map<string, number> = new Map();
   private async handleGPSData(deviceId: string, payload: GPSDataPayload): Promise<void> {
     try {
-      logger.debug(
-        `Received GPS data from device: ${deviceId}, points: ${payload.gps_data.length}`
-      );
+      logger.info(`Received GPS data from device: ${deviceId}, points: ${payload.gps_data.length}`);
 
       // Lọc các điểm GPS nếu không phải bản ghi đầu tiên
       let filteredPayload = payload;
@@ -306,6 +304,8 @@ class MQTTService {
 
         // Emit raw GPS data
         socketIOServer.emit("gps:raw", streamData);
+
+        logger.info("streamed raw GPS data for device:", deviceId);
       }
     } catch (error) {
       logger.error("Error streaming raw GPS data:", error);
@@ -1034,7 +1034,7 @@ class MQTTService {
           payload.parking_id
         );
 
-        
+
         if (parkingEventId) {
           // Update the parking event with end time and duration
           await eventLogService.updateParkingEndEvent(parkingEventId, {
