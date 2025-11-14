@@ -65,15 +65,10 @@ export interface GPSDataRow {
 }
 
 // Driver Request Types
-export interface DriverRequestData {
-  driver_image?: string;
-  driver_rfid?: string;
-}
-
 export interface DriverRequestPayload {
   time_stamp: number;
   message_id: string;
-  request_data: DriverRequestData;
+  driver_id: string;
 }
 
 // Driver Info Types
@@ -112,15 +107,10 @@ export interface DriverCheckInPayload {
 }
 
 // Driver Check-out Confirm Request Types
-export interface CheckOutConfirmRequestData {
-  driver_image?: string;
-  driver_rfid?: string;
-}
-
 export interface CheckOutConfirmRequestPayload {
   time_stamp: number;
   message_id: string;
-  request_data: CheckOutConfirmRequestData;
+  driver_id: string;
 }
 
 // Driver Check-out Confirm Response Types
@@ -190,7 +180,7 @@ export interface DMSViolationInfo {
   latitude: number;
   longitude: number;
   speed: number;
-  Violation_DMS: 0 | 1 | 2 | 3 | 4 | 5; // 0-None, 1-PhoneUse, 2-Drowness, 3-Smoking, 4-Unfocus, 5-Handoff
+  Violation_DMS: "0" | "1" | "2" | "3" | "4" | "5"; // 0-None, 1-PhoneUse, 2-Drowness, 3-Smoking, 4-Unfocus, 5-Handoff
   image_data: string; // Binary/base64 encoded image data in JPEG format
 }
 
@@ -212,7 +202,7 @@ export interface OMSViolationInfo {
   latitude: number;
   longitude: number;
   speed: number;
-  Violation_OMS: 0 | 1; // 0-None, 1-Unfasten_seat_belt
+  Violation_OMS: "0" | "1"; // 0-None, 1-Unfasten_seat_belt
   image_data: string; // Binary/base64 encoded image data in JPEG format
 }
 

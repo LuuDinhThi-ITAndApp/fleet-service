@@ -219,8 +219,8 @@ class TimescaleDBClient {
       }).join(',');
 
       const params = payload.gps_data.flatMap((gpsPoint) => {
-        // Convert Unix milliseconds to UTC+7
-        const utc7Ms = payload.time_stamp + (7 * 60 * 60 * 1000);
+        // Convert Unix milliseconds to UTC+7 - use gpsPoint.gps_timestamp not payload.time_stamp
+        const utc7Ms = gpsPoint.gps_timestamp + (7 * 60 * 60 * 1000);
         const utc7Date = new Date(utc7Ms);
 
         return [

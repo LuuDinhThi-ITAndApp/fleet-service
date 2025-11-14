@@ -335,56 +335,33 @@ class MQTTService {
   ): Promise<void> {
     try {
       logger.info(`Received driver request from device: ${deviceId}`);
+      logger.info(`Driver ID: ${payload.driver_id}`);
 
-      // Validate: At least one of driver_image or driver_rfid must be present
-      const hasImage =
-        payload.request_data.driver_image &&
-        payload.request_data.driver_image !== "None";
-      const hasRfid =
-        payload.request_data.driver_rfid &&
-        payload.request_data.driver_rfid !== "None";
-
-      if (!hasImage && !hasRfid) {
-        logger.error(
-          "Invalid driver request: Neither driver_image nor driver_rfid provided"
-        );
+      // Validate driver_id
+      if (!payload.driver_id || payload.driver_id === "None") {
+        logger.error("Invalid driver request: driver_id is missing or None");
         return;
       }
 
-      // Log which method is being used
-      if (hasRfid) {
-        logger.info(
-          `Driver identification by RFID: ${payload.request_data.driver_rfid}`
-        );
-      } else if (hasImage) {
-        logger.info(
-          `Driver identification by Image (length: ${
-            payload.request_data.driver_image?.length || 0
-          } chars)`
-        );
-      }
+      // HARD CODED: Always use fixed driver ID regardless of input
+      const FIXED_DRIVER_ID = "880e8400-e29b-41d4-a716-446655440001";
+      logger.info(`HARD CODED: Using fixed driver_id: ${FIXED_DRIVER_ID} (received: ${payload.driver_id})`);
 
-      // Get driver info from API
+      // Get driver info from API using FIXED driver_id
       let driverData;
 
       try {
-        // TODO: Implement actual RFID/Image matching to get driver UUID
-        // For now, use predefined UUIDs for testing
-        const driverUuid = hasRfid
-          ? "880e8400-e29b-41d4-a716-446655440001" // RFID driver
-          : "880e8400-e29b-41d4-a716-446655440002"; // Image driver
-
-        logger.info(`Fetching driver info from API for UUID: ${driverUuid}`);
-        driverData = await driverService.getDriverById(driverUuid);
+        logger.info(`Fetching driver info from API for driver_id: ${FIXED_DRIVER_ID}`);
+        driverData = await driverService.getDriverById(FIXED_DRIVER_ID);
 
         // Fallback to mock data if API fails or driver not found
         if (!driverData) {
-          logger.warn(`Driver ${driverUuid} not found in API, using mock data`);
-          driverData = driverService.getMockDriverInfo(hasRfid ? 0 : 1);
+          logger.warn(`Driver ${FIXED_DRIVER_ID} not found in API, using mock data`);
+          driverData = driverService.getMockDriverInfo(0);
         }
       } catch (error) {
         logger.error("Error fetching driver from API, using mock data:", error);
-        driverData = driverService.getMockDriverInfo(hasRfid ? 0 : 1);
+        driverData = driverService.getMockDriverInfo(0);
       }
 
       // Build driver info payload
@@ -406,7 +383,9 @@ class MQTTService {
       // Stream to Socket.IO for monitoring
       socketIOServer.emit("driver:request", {
         device_id: deviceId,
-        ...payload,
+        driver_id: payload.driver_id,
+        message_id: payload.message_id,
+        time_stamp: payload.time_stamp,
       });
 
       socketIOServer.emit("driver:info", {
@@ -647,13 +626,12 @@ class MQTTService {
       logger.info(
         `Received check-out confirm request from device: ${deviceId}`
       );
+      logger.info(`Driver ID: ${payload.driver_id}`);
 
-      const requestData = payload.request_data;
-
-      // Validate request data (at least one of driver_image or driver_rfid required)
-      if (!requestData.driver_image && !requestData.driver_rfid) {
+      // Validate driver_id
+      if (!payload.driver_id || payload.driver_id === "None") {
         logger.warn(
-          `Invalid check-out confirm request from ${deviceId}: missing driver_image or driver_rfid`
+          `Invalid check-out confirm request from ${deviceId}: driver_id is missing or None`
         );
         await this.publishCheckOutConfirmResponse(
           deviceId,
@@ -695,6 +673,7 @@ class MQTTService {
       // Emit to Socket.IO
       socketIOServer.emit("checkout:confirm:request", {
         device_id: deviceId,
+        driver_id: payload.driver_id,
         message_id: payload.message_id,
         is_confirm: isConfirm,
         has_trip: latestTrip !== null,
@@ -1280,9 +1259,10 @@ class MQTTService {
       const violationInfo = payload.violate_infomation_DMS;
       const driverInfo = payload.driver_information;
 
-      // Map behavior code to string name
+      // Map behavior code to string name - convert string to number for array index
       const behaviorNames = ['None', 'PhoneUse', 'Drowness', 'Smoking', 'Unfocus', 'Handoff'];
-      const behaviorName = behaviorNames[violationInfo.Violation_DMS] || 'Unknown';
+      const violationCode = parseInt(violationInfo.Violation_DMS, 10);
+      const behaviorName = behaviorNames[violationCode] || 'Unknown';
 
       logger.info(
         `DMS Violation - Driver: ${driverInfo.driver_name} (${driverInfo.driver_license_number})`
@@ -1423,9 +1403,10 @@ class MQTTService {
       const violationInfo = payload.violate_infomation_OMS;
       const driverInfo = payload.driver_information;
 
-      // Map behavior code to string name - OMS only has 2 values
+      // Map behavior code to string name - OMS only has 2 values - convert string to number for array index
       const behaviorNames = ['None', 'Unfasten_seat_belt'];
-      const behaviorName = behaviorNames[violationInfo.Violation_OMS] || 'Unknown';
+      const violationCode = parseInt(violationInfo.Violation_OMS, 10);
+      const behaviorName = behaviorNames[violationCode] || 'Unknown';
 
       logger.info(
         `OMS Violation - Driver: ${driverInfo.driver_name} (${driverInfo.driver_license_number})`
