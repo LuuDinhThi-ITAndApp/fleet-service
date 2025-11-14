@@ -1002,10 +1002,19 @@ class MQTTService {
           },
         });
 
-        // Update trip status to MOVING
+        // Calculate total idle time by adding this parking duration
+        const currentIdleTime = latestTrip.idleTimeSeconds || 0;
+        const newIdleTime = currentIdleTime + payload.parking_duration;
+
+        logger.info(
+          `Updating trip idle time: ${currentIdleTime}s + ${payload.parking_duration}s = ${newIdleTime}s`
+        );
+
+        // Update trip status to MOVING and add idle time
         await tripService.updateTrip(latestTrip.id, {
           startTime: latestTrip.startTime, // Required by API
           status: VehicleState.MOVING,
+          idleTimeSeconds: newIdleTime,
         });
 
         // Get the cached parking event MongoDB ID
