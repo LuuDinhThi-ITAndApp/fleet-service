@@ -1,3 +1,4 @@
+
 import mqtt, { MqttClient } from "mqtt";
 import { config } from "../config";
 import { logger } from "../utils/logger";
@@ -28,6 +29,7 @@ import { tripService } from "../services/tripService";
 import { eventLogService } from "../services/eventLogService";
 import { CacheKeys, VehicleState } from "../utils/constants";
 import { osrmClient } from "./osrm_client";
+import { MqttTopic } from "../types/enum";
 
 class MQTTService {
   private client: MqttClient | null = null;
@@ -124,97 +126,75 @@ class MQTTService {
     try {
       // Parse message payload
       const message = JSON.parse(payload.toString());
-
       // Extract device_id from topic (e.g., fms/device123/operation_monitoring/gps_data -> device123)
       const topicParts = topic.split("/");
       const deviceId = topicParts[1] || message.device_id;
 
-      // Check if this is a GPS data message
-      if (topic.includes("operation_monitoring/gps_data")) {
-        await this.handleGPSData(deviceId, message as GPSDataPayload);
+      let matchedCase: MqttTopic | undefined = undefined;
+      for (const key in MqttTopic) {
+        if (Object.prototype.hasOwnProperty.call(MqttTopic, key)) {
+          const topicValue = MqttTopic[key as keyof typeof MqttTopic];
+          if (topic.includes(topicValue)) {
+            matchedCase = topicValue as MqttTopic;
+            break;
+          }
+        }
       }
-      // Check if this is a driver request message
-      else if (topic.includes("driving_session/driver_request")) {
-        await this.handleDriverRequest(
-          deviceId,
-          message as DriverRequestPayload
-        );
-      }
-      // Check if this is a driver check-in message
-      else if (topic.includes("driving_session/driver_checkin")) {
-        await this.handleDriverCheckIn(
-          deviceId,
-          message as DriverCheckInPayload
-        );
-      }
-      // Check if this is a check-out confirm request message
-      else if (
-        topic.includes("driving_session/driver_checkout_confirm_request")
-      ) {
-        await this.handleCheckOutConfirmRequest(
-          deviceId,
-          message as CheckOutConfirmRequestPayload
-        );
-      }
-      // Check if this is a driver check-out message
-      else if (topic.includes("driving_session/driver_checkout")) {
-        await this.handleDriverCheckOut(
-          deviceId,
-          message as DriverCheckOutPayload
-        );
-      } else if (topic.includes("driving_session/parking_state")) {
-        await this.handleParkingState(deviceId, message as ParkingStateEvent);
-      }
-      // Check if this is a continuous driving time message
-      else if (topic.includes("driving_session/continuous_driving_time")) {
-        await this.handleContinuousDrivingTime(
-          deviceId,
-          message as DrivingTimeEvent
-        );
-      }
-      // Check if this is a vehicle operation manager message
-      else if (topic.includes("driving_session/vehicle_operation_manager")) {
-        await this.handleVehicleOperationManager(
-          deviceId,
-          message as VehicleOperationManagerEvent
-        );
-      }
-      // Check if this is a DMS (Driver Monitoring System) message
-      else if (topic.includes("/DMS")) {
-        await this.handleDMS(deviceId, message as DMSPayload);
-      }
-      // Check if this is an OMS (Operational Monitoring System) message
-      else if (topic.includes("/OMS")) {
-        await this.handleOMS(deviceId, message as OMSPayload);
-      }
-      // Check if this is a streaming event message
-      else if (topic.includes("driving_session/streamming_event")) {
-        await this.handleStreamingEvent(
-          deviceId,
-          message as StreamingEventPayload
-        );
-      } else {
-        // Handle generic event
-        const event: EdgeEvent = {
-          device_id: deviceId,
-          timestamp: new Date(message.timestamp || Date.now()),
-          event_type: message.event_type || "unknown",
-          data: message.data || message,
-          metadata: message.metadata,
-        };
 
-        logger.debug(
-          `Received event from device: ${deviceId}, type: ${event.event_type}`
-        );
-
-        // Process event in parallel
-        await Promise.allSettled([
-          this.cacheEvent(event),
-          this.streamEvent(event),
-        ]);
-
-        // Add to batch for database insertion
-        this.addToBatch(event);
+      switch (matchedCase) {
+        case MqttTopic.GpsData:
+          await this.handleGPSData(deviceId, message as GPSDataPayload);
+          break;
+        case MqttTopic.DriverRequest:
+          await this.handleDriverRequest(deviceId, message as DriverRequestPayload);
+          break;
+        case MqttTopic.DriverCheckIn:
+          await this.handleDriverCheckIn(deviceId, message as DriverCheckInPayload);
+          break;
+        case MqttTopic.CheckOutConfirmRequest:
+          await this.handleCheckOutConfirmRequest(deviceId, message as CheckOutConfirmRequestPayload);
+          break;
+        case MqttTopic.DriverCheckOut:
+          await this.handleDriverCheckOut(deviceId, message as DriverCheckOutPayload);
+          break;
+        case MqttTopic.ParkingState:
+          await this.handleParkingState(deviceId, message as ParkingStateEvent);
+          break;
+        case MqttTopic.DrivingTime:
+          await this.handleContinuousDrivingTime(deviceId, message as DrivingTimeEvent);
+          break;
+        case MqttTopic.VehicleOperationManager:
+          await this.handleVehicleOperationManager(deviceId, message as VehicleOperationManagerEvent);
+          break;
+        case MqttTopic.DMS:
+          await this.handleDMS(deviceId, message as DMSPayload);
+          break;
+        case MqttTopic.OMS:
+          await this.handleOMS(deviceId, message as OMSPayload);
+          break;
+        case MqttTopic.StreamingEvent:
+          await this.handleStreamingEvent(deviceId, message as StreamingEventPayload);
+          break;
+        default: {
+          // Handle generic event
+          const event: EdgeEvent = {
+            device_id: deviceId,
+            timestamp: new Date(message.timestamp || Date.now()),
+            event_type: message.event_type || "unknown",
+            data: message.data || message,
+            metadata: message.metadata,
+          };
+          logger.debug(
+            `Received event from device: ${deviceId}, type: ${event.event_type}`
+          );
+          // Process event in parallel
+          await Promise.allSettled([
+            this.cacheEvent(event),
+            this.streamEvent(event),
+          ]);
+          // Add to batch for database insertion
+          this.addToBatch(event);
+        }
       }
     } catch (error) {
       logger.error("Error handling MQTT message:", error);
