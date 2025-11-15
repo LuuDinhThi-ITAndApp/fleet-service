@@ -39,11 +39,15 @@ class MQTTService {
 
   // GPS Buffer for snap-to-road
   private gpsBuffers: Map<string, GPSDataPoint[]> = new Map();
-  private gpsBufferSize = 8; // Base buffer size - will be adjusted dynamically based on speed
-  private gpsBufferTimeout = 4000; // 4 seconds
   private gpsBufferTimers: Map<string, NodeJS.Timeout> = new Map();
-  private minConfidenceThreshold = 0.5; // 50% minimum confidence - more lenient to reduce zigzag from frequent fallback
-  private lastStreamedSnappedPoint: Map<string, [number, number]> = new Map(); // Track last streamed point per device
+  private cacheSessions: Map<string, string> = new Map();
+  // For now, use deviceId as vehicleId
+  private vehicleId = "770e8400-e29b-41d4-a716-446655440002";
+
+  // TODO: Get driverId from driver_license_number
+  // For now, use hardcoded UUID
+  private driverId = "880e8400-e29b-41d4-a716-446655440001";
+  private tzOffsetMinutes = 7 * 60 * 60 * 1000;
 
   /**
    * Connect to MQTT broker
@@ -271,6 +275,7 @@ class MQTTService {
         const cacheData = {
           time_stamp: payload.time_stamp,
           message_id: payload.message_id,
+          trip_id: this.cacheSessions.get(deviceId) || undefined,
           gps_data: latestGPSPoint,
         };
         await redisClient.cacheGPSData(deviceId, cacheData, this.ttlGPSCache);
@@ -294,6 +299,7 @@ class MQTTService {
           time_stamp: payload.time_stamp,
           message_id: payload.message_id,
           gps_data: latestGPSPoint,
+          trip_id: this.cacheSessions.get(deviceId) || undefined,
         };
 
         // Emit to channel by device ID
@@ -320,7 +326,7 @@ class MQTTService {
     payload: GPSDataPayload
   ): Promise<void> {
     try {
-      await timescaleDB.insertGPSDataBatch(deviceId, payload);
+      await timescaleDB.insertGPSDataBatch(deviceId, payload, this.cacheSessions.get(deviceId) || undefined);
     } catch (error) {
       logger.error("Error storing GPS data:", error);
     }
@@ -344,19 +350,18 @@ class MQTTService {
       }
 
       // HARD CODED: Always use fixed driver ID regardless of input
-      const FIXED_DRIVER_ID = "880e8400-e29b-41d4-a716-446655440001";
-      logger.info(`HARD CODED: Using fixed driver_id: ${FIXED_DRIVER_ID} (received: ${payload.driver_id})`);
+      logger.info(`HARD CODED: Using fixed driver_id: ${this.driverId} (received: ${payload.driver_id})`);
 
       // Get driver info from API using FIXED driver_id
       let driverData;
 
       try {
-        logger.info(`Fetching driver info from API for driver_id: ${FIXED_DRIVER_ID}`);
-        driverData = await driverService.getDriverById(FIXED_DRIVER_ID);
+        logger.info(`Fetching driver info from API for driver_id: ${this.driverId}`);
+        driverData = await driverService.getDriverById(this.driverId);
 
         // Fallback to mock data if API fails or driver not found
         if (!driverData) {
-          logger.warn(`Driver ${FIXED_DRIVER_ID} not found in API, using mock data`);
+          logger.warn(`Driver ${this.driverId} not found in API, using mock data`);
           driverData = driverService.getMockDriverInfo(0);
         }
       } catch (error) {
@@ -366,7 +371,7 @@ class MQTTService {
 
       // Build driver info payload
       // Convert to UTC+7 milliseconds
-      const utc7Ms = Date.now() + 7 * 60 * 60 * 1000;
+      const utc7Ms = Date.now() + this.tzOffsetMinutes;
 
       const driverInfo: DriverInfoPayload = {
         time_stamp: utc7Ms,
@@ -445,7 +450,7 @@ class MQTTService {
 
       // Convert Unix milliseconds to UTC+7
       const checkInTimestampMs =
-        checkInData.check_in_timestamp + 7 * 60 * 60 * 1000;
+        checkInData.check_in_timestamp + this.tzOffsetMinutes;
       logger.info(
         `Check-in time: ${new Date(checkInTimestampMs).toISOString()}`
       );
@@ -476,28 +481,12 @@ class MQTTService {
       // Create new trip with status "Working"
       let tripId = await this.createTripForCheckIn(deviceId, checkInData);
       logger.info(`🔍 DEBUG: After createTripForCheckIn, tripId = ${tripId}`);
-
-      // If trip creation failed, try to get existing active trip
-      if (!tripId) {
-        logger.info(
-          `Trip creation failed, attempting to get existing active trip for ${deviceId}`
-        );
-        const vehicleId = "770e8400-e29b-41d4-a716-446655440002"; // TODO: Map deviceId to vehicleId
-        const existingTrip = await tripService.getLatestTrip(vehicleId);
-        if (existingTrip && !existingTrip.endTime) {
-          tripId = existingTrip.id;
-          logger.info(`Using existing active trip: ${tripId}`);
-        } else {
-          logger.warn(`⚠️ No active trip found! tripId will be undefined`);
-        }
-      }
-
-      logger.info(`🔍 DEBUG: Final tripId before logging event = ${tripId}`);
+      this.cacheSessions.set(deviceId, tripId || "");
 
       // Log check-in event
       await eventLogService.logCheckInEvent(
         payload.message_id,
-        "770e8400-e29b-41d4-a716-446655440002", // TODO: Map deviceId to vehicleId
+        this.vehicleId,
         {
           name: driverInfo.driver_name,
           licenseNumber: driverInfo.driver_license_number,
@@ -533,17 +522,33 @@ class MQTTService {
     try {
       logger.info(`Creating trip for device: ${deviceId}`);
 
-      // TODO: Map deviceId to vehicleId (UUID from API)
-      // For now, use deviceId as vehicleId
-      const vehicleId = "770e8400-e29b-41d4-a716-446655440002";
-
-      // TODO: Get driverId from driver_license_number
-      // For now, use hardcoded UUID
-      const driverId = "880e8400-e29b-41d4-a716-446655440001";
-
       // Convert Unix milliseconds to UTC+7
-      const startTimeMs = checkInData.check_in_timestamp + 7 * 60 * 60 * 1000;
+      const startTimeMs = checkInData.check_in_timestamp + this.tzOffsetMinutes;
       const startTime = new Date(startTimeMs).toISOString();
+
+      // get current trip
+
+      const existingTrip = await tripService.getLatestTrip(this.vehicleId);
+      if (existingTrip && existingTrip.status === VehicleState.MOVING) {
+        logger.warn(
+          `Vehicle ${deviceId} already has an active trip (${existingTrip.id}). Skipping trip creation.`
+        );
+        
+        // Cache vehicle state with trip info
+        await redisClient.cacheDeviceState(deviceId, {
+          device_id: deviceId,
+          timestamp: new Date(),
+          event_type: CacheKeys.VEHICLE_STATE,
+          data: {
+            trip_id: existingTrip.id,
+            trip_number: existingTrip.tripNumber,
+            status: VehicleState.MOVING,
+          },
+        });
+
+        return existingTrip.id;
+      }
+
 
       // Generate trip number
       const tripNumber = tripService.generateTripNumber(deviceId);
@@ -555,8 +560,8 @@ class MQTTService {
 
       // Create trip request
       const tripRequest = {
-        vehicleId: vehicleId,
-        driverId: driverId,
+        vehicleId: this.vehicleId,
+        driverId: this.driverId,
         tripNumber: tripNumber,
         startTime: startTime,
         startAddress: startAddress,
@@ -643,16 +648,14 @@ class MQTTService {
 
       // Get latest trip for vehicle
       // TODO: Map deviceId to vehicleId (UUID from API)
-      const vehicleId = "770e8400-e29b-41d4-a716-446655440002";
-      const latestTrip = await tripService.getLatestTrip(vehicleId);
+      const latestTrip = await tripService.getLatestTrip(this.vehicleId);
 
       // Check if trip exists and has no end time
       const isConfirm = latestTrip !== null && !latestTrip.endTime;
 
       if (isConfirm) {
         logger.info(
-          `Ongoing trip found for ${deviceId}: ${
-            latestTrip!.id
+          `Ongoing trip found for ${deviceId}: ${latestTrip!.id
           }. Confirming check-out.`
         );
       } else if (latestTrip === null) {
@@ -711,7 +714,7 @@ class MQTTService {
       );
 
       // Convert to UTC+7 milliseconds
-      const utc7Ms = Date.now() + 7 * 60 * 60 * 1000;
+      const utc7Ms = Date.now() + this.tzOffsetMinutes;
 
       const responsePayload: CheckOutConfirmResponsePayload = {
         time_stamp: utc7Ms,
@@ -764,7 +767,7 @@ class MQTTService {
 
       // Convert Unix milliseconds to UTC+7
       const checkOutTimestampMs =
-        checkOutData.check_out_timestamp + 7 * 60 * 60 * 1000;
+        checkOutData.check_out_timestamp + this.tzOffsetMinutes;
       logger.info(
         `Check-out time: ${new Date(checkOutTimestampMs).toISOString()}`
       );
@@ -800,7 +803,7 @@ class MQTTService {
       // Log check-out event
       await eventLogService.logCheckOutEvent(
         payload.message_id,
-        "770e8400-e29b-41d4-a716-446655440002", // TODO: Map deviceId to vehicleId
+        this.vehicleId,
         {
           name: driverInfo.driver_name,
           licenseNumber: driverInfo.driver_license_number,
@@ -837,11 +840,8 @@ class MQTTService {
     try {
       logger.info(`Updating trip for device: ${deviceId} with check-out data`);
 
-      // TODO: Map deviceId to vehicleId (UUID from API)
-      const vehicleId = "770e8400-e29b-41d4-a716-446655440002";
-
       // Get latest trip
-      const latestTrip = await tripService.getLatestTrip(vehicleId);
+      const latestTrip = await tripService.getLatestTrip(this.vehicleId);
 
       if (!latestTrip) {
         logger.warn(
@@ -858,7 +858,7 @@ class MQTTService {
       }
 
       // Convert Unix milliseconds to UTC+7
-      const endTimeMs = checkOutData.check_out_timestamp + 7 * 60 * 60 * 1000;
+      const endTimeMs = checkOutData.check_out_timestamp + this.tzOffsetMinutes;
       const endTime = new Date(endTimeMs).toISOString();
 
       // Format end address from location
@@ -873,7 +873,7 @@ class MQTTService {
         endTime: endTime,
         endAddress: endAddress,
         durationMinutes: checkOutData.working_duration,
-        status: "Completed",
+        status: VehicleState.COMPLETED,
       });
       // const updatedTrip = await tripService.endDrivingSession(vehicleId);
 
@@ -897,6 +897,8 @@ class MQTTService {
         return updatedTrip.id;
       }
 
+      this.cacheSessions.delete(deviceId);
+
       return latestTrip.id;
     } catch (error: any) {
       logger.error("Error updating trip with check-out:", {
@@ -917,26 +919,22 @@ class MQTTService {
     try {
       logger.info(`Received parking state from device: ${deviceId}`);
       logger.info(
-        `Parking ID: ${payload.parking_id}, State: ${
-          payload.parking_status === 0 ? "PARKED" : "MOVING"
+        `Parking ID: ${payload.parking_id}, State: ${payload.parking_status === 0 ? "PARKED" : "MOVING"
         }, Duration: ${payload.parking_duration} seconds`
       );
 
-      // TODO: Map deviceId to vehicleId (UUID from API)
-      const vehicleId = "770e8400-e29b-41d4-a716-446655440002";
-
       // get latest trip
-      const latestTrip = await tripService.getLatestTrip(vehicleId);
+      const latestTrip = await tripService.getLatestTrip(this.vehicleId);
 
       if (!latestTrip) {
         logger.info(
-          `No active trip found for vehicle ${vehicleId}. Cannot update with parking state.`
+          `No active trip found for vehicle ${this.vehicleId}. Cannot update with parking state.`
         );
         return;
       }
 
       // Convert Unix milliseconds to UTC+7
-      const timestampMs = payload.time_stamp + 7 * 60 * 60 * 1000;
+      const timestampMs = payload.time_stamp + this.tzOffsetMinutes;
       const timestamp = new Date(timestampMs).toISOString();
 
       // Handle parking state
@@ -1081,15 +1079,13 @@ class MQTTService {
         `Continuous driving time: ${payload.continuous_driving_time} seconds, Total driving duration: ${payload.driving_duration} seconds`
       );
 
-      // TODO: Map deviceId to vehicleId (UUID from API)
-      const vehicleId = "770e8400-e29b-41d4-a716-446655440002";
 
       // Get latest trip
-      const latestTrip = await tripService.getLatestTrip(vehicleId);
+      const latestTrip = await tripService.getLatestTrip(this.vehicleId);
 
       if (!latestTrip) {
         logger.info(
-          `No active trip found for vehicle ${vehicleId}. Cannot update with continuous driving time.`
+          `No active trip found for vehicle ${this.vehicleId}. Cannot update with continuous driving time.`
         );
         return;
       }
@@ -1144,15 +1140,13 @@ class MQTTService {
         `Received vehicle operation manager event from device: ${deviceId}`
       );
 
-      // TODO: Map deviceId to vehicleId (UUID from API)
-      const vehicleId = "770e8400-e29b-41d4-a716-446655440002";
 
       // Get latest trip
-      const latestTrip = await tripService.getLatestTrip(vehicleId);
+      const latestTrip = await tripService.getLatestTrip(this.vehicleId);
 
       if (!latestTrip) {
         logger.info(
-          `No active trip found for vehicle ${vehicleId}. Cannot log violation.`
+          `No active trip found for vehicle ${this.vehicleId}. Cannot log violation.`
         );
         return;
       }
@@ -1243,10 +1237,9 @@ class MQTTService {
       });
 
       logger.info(
-        `Vehicle operation violation processed successfully for ${deviceId}${
-          violationType === "SPEED_LIMIT"
-            ? `. Speed violations in session: ${speedViolationCount}`
-            : ""
+        `Vehicle operation violation processed successfully for ${deviceId}${violationType === "SPEED_LIMIT"
+          ? `. Speed violations in session: ${speedViolationCount}`
+          : ""
         }`
       );
     } catch (error) {
@@ -1305,23 +1298,20 @@ class MQTTService {
         // Continue processing even if image upload fails
       }
 
-      // TODO: Map deviceId to vehicleId (UUID from API)
-      const vehicleId = "770e8400-e29b-41d4-a716-446655440002";
-
       // Get latest trip
-      const latestTrip = await tripService.getLatestTrip(vehicleId);
+      const latestTrip = await tripService.getLatestTrip(this.vehicleId);
 
       if (!latestTrip) {
         logger.info(
-          `No active trip found for vehicle ${vehicleId}. Logging DMS event without trip.`
+          `No active trip found for vehicle ${this.vehicleId}. Logging DMS event without trip.`
         );
       }
 
       // Convert Unix milliseconds to UTC+7
-      const timestampMs = payload.time_stamp + 7 * 60 * 60 * 1000;
+      const timestampMs = payload.time_stamp + this.tzOffsetMinutes;
       const timestamp = new Date(timestampMs).toISOString();
 
-      const gpsTimestampMs = violationInfo.gps_timestamp + 7 * 60 * 60 * 1000;
+      const gpsTimestampMs = violationInfo.gps_timestamp + this.tzOffsetMinutes;
       const gpsTimestamp = new Date(gpsTimestampMs).toISOString();
 
       // Log DMS violation event with image URL
@@ -1449,23 +1439,20 @@ class MQTTService {
         // Continue processing even if image upload fails
       }
 
-      // TODO: Map deviceId to vehicleId (UUID from API)
-      const vehicleId = "770e8400-e29b-41d4-a716-446655440002";
-
       // Get latest trip
-      const latestTrip = await tripService.getLatestTrip(vehicleId);
+      const latestTrip = await tripService.getLatestTrip(this.vehicleId);
 
       if (!latestTrip) {
         logger.info(
-          `No active trip found for vehicle ${vehicleId}. Logging OMS event without trip.`
+          `No active trip found for vehicle ${this.vehicleId}. Logging OMS event without trip.`
         );
       }
 
       // Convert Unix milliseconds to UTC+7
-      const timestampMs = payload.time_stamp + 7 * 60 * 60 * 1000;
+      const timestampMs = payload.time_stamp + this.tzOffsetMinutes;
       const timestamp = new Date(timestampMs).toISOString();
 
-      const gpsTimestampMs = violationInfo.gps_timestamp + 7 * 60 * 60 * 1000;
+      const gpsTimestampMs = violationInfo.gps_timestamp + this.tzOffsetMinutes;
       const gpsTimestamp = new Date(gpsTimestampMs).toISOString();
 
       // Log OMS violation event with image URL

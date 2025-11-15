@@ -207,15 +207,15 @@ class TimescaleDBClient {
   /**
    * Insert GPS data batch
    */
-  async insertGPSDataBatch(deviceId: string, payload: GPSDataPayload): Promise<void> {
+  async insertGPSDataBatch(deviceId: string, payload: GPSDataPayload, trip_id: string | undefined): Promise<void> {
     if (payload.gps_data.length === 0) return;
 
     const client = await this.pool.connect();
 
     try {
       const values = payload.gps_data.map((_, index) => {
-        const offset = index * 6;
-        return `($${offset + 1}, $${offset + 2}, $${offset + 3}, $${offset + 4}, $${offset + 5}, $${offset + 6})`;
+        const offset = index * 7;
+        return `($${offset + 1}, $${offset + 2}, $${offset + 3}, $${offset + 4}, $${offset + 5}, $${offset + 6}, $${offset + 7})`;
       }).join(',');
 
       const params = payload.gps_data.flatMap((gpsPoint) => {
@@ -230,12 +230,13 @@ class TimescaleDBClient {
           gpsPoint.longitude,
           gpsPoint.speed,
           gpsPoint.accuracy,
+          trip_id || null,
         ];
       });
 
       await client.query(
         `INSERT INTO vehicle_telemetry
-         (vehicle_id, time, latitude, longitude, vehicle_speed, quality)
+         (vehicle_id, time, latitude, longitude, vehicle_speed, quality, trip_id)
          VALUES ${values}`,
         params
       );
