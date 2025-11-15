@@ -219,24 +219,24 @@ class MQTTService {
 
       // Lọc các điểm GPS nếu không phải bản ghi đầu tiên
       let filteredPayload = payload;
-      const lastTimestamp = this.lastGPSTimestampByDevice.get(deviceId);
-      if (lastTimestamp !== undefined) {
-        // Lọc các điểm có gps_timestamp > lastTimestamp
-        const filteredPoints = payload.gps_data.filter(point => point.gps_timestamp > lastTimestamp);
-        if (filteredPoints.length === 0) {
-          logger.debug(`All GPS points dropped for device: ${deviceId} (all older than last received)`);
-          return;
-        }
-        filteredPayload = { ...payload, gps_data: filteredPoints };
-      }
-      // Cập nhật lastGPSTimestampByDevice nếu có điểm mới
-      if (filteredPayload.gps_data.length > 0) {
-        const maxTimestamp = Math.max(...filteredPayload.gps_data.map(p => p.gps_timestamp));
-        this.lastGPSTimestampByDevice.set(deviceId, maxTimestamp);
-      }
-      filteredPayload.gps_data.forEach(point => {
-        point.speed = Math.floor(point.speed);
-      });
+      // const lastTimestamp = this.lastGPSTimestampByDevice.get(deviceId);
+      // if (lastTimestamp !== undefined) {
+      //   // Lọc các điểm có gps_timestamp > lastTimestamp
+      //   const filteredPoints = payload.gps_data.filter(point => point.gps_timestamp > lastTimestamp);
+      //   if (filteredPoints.length === 0) {
+      //     logger.debug(`All GPS points dropped for device: ${deviceId} (all older than last received)`);
+      //     return;
+      //   }
+      //   filteredPayload = { ...payload, gps_data: filteredPoints };
+      // }
+      // // Cập nhật lastGPSTimestampByDevice nếu có điểm mới
+      // if (filteredPayload.gps_data.length > 0) {
+      //   const maxTimestamp = Math.max(...filteredPayload.gps_data.map(p => p.gps_timestamp));
+      //   this.lastGPSTimestampByDevice.set(deviceId, maxTimestamp);
+      // }
+      // filteredPayload.gps_data.forEach(point => {
+      //   point.speed = Math.floor(point.speed);
+      // });
 
       // Cache và lưu dữ liệu GPS đã lọc
       await Promise.allSettled([
