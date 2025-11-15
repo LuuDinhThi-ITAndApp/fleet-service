@@ -180,7 +180,7 @@ export interface DMSViolationInfo {
   latitude: number;
   longitude: number;
   speed: number;
-  Violation_DMS: 0 | 1 | 2 | 3 | 4 | 5; // 0-None, 1-PhoneUse, 2-Drowness, 3-Smoking, 4-Unfocus, 5-Handoff
+  violation_dms: 0 | 1 | 2 | 3 | 4 | 5; // 0-None, 1-PhoneUse, 2-Drowness, 3-Smoking, 4-Unfocus, 5-Handoff
   image_data: string; // Binary/base64 encoded image data in JPEG format
 }
 
@@ -193,7 +193,7 @@ export interface DMSPayload {
   time_stamp: number;
   message_id: string;
   violate_infomation_DMS: DMSViolationInfo;
-  driver_information: DMSDriverInformation;
+  driver_information?: DMSDriverInformation;
 }
 
 // OMS (Operational Monitoring System) Types
@@ -202,7 +202,7 @@ export interface OMSViolationInfo {
   latitude: number;
   longitude: number;
   speed: number;
-  Violation_OMS: 0 | 1; // 0-None, 1-Unfasten_seat_belt
+  violation_oms: 0 | 1; // 0-None, 1-Unfasten_seat_belt
   image_data: string; // Binary/base64 encoded image data in JPEG format
 }
 
@@ -210,7 +210,7 @@ export interface OMSPayload {
   time_stamp: number;
   message_id: string;
   violate_infomation_OMS: OMSViolationInfo;
-  driver_information: DMSDriverInformation;
+  driver_information?: DMSDriverInformation;
 }
 
 // Streaming Event Types

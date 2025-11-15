@@ -1259,18 +1259,17 @@ class MQTTService {
     try {
       logger.info(`Received DMS data from device: ${deviceId}`);
 
+      // Log full raw payload
+      logger.info('DMS Raw Payload:', JSON.stringify(payload, null, 2));
+
       const violationInfo = payload.violate_infomation_DMS;
-      const driverInfo = payload.driver_information;
 
-      // Map behavior code to string name - Violation_DMS is now number
+      // Map behavior code to string name - violation_dms is now number
       const behaviorNames = ['None', 'PhoneUse', 'Drowness', 'Smoking', 'Unfocus', 'Handoff'];
-      const behaviorName = behaviorNames[violationInfo.Violation_DMS] || 'Unknown';
+      const behaviorName = behaviorNames[violationInfo.violation_dms] || 'Unknown';
 
       logger.info(
-        `DMS Violation - Driver: ${driverInfo.driver_name} (${driverInfo.driver_license_number})`
-      );
-      logger.info(
-        `Behavior: ${behaviorName} (${violationInfo.Violation_DMS}), Speed: ${violationInfo.speed} km/h`
+        `DMS Violation - Behavior: ${behaviorName} (${violationInfo.violation_dms}), Speed: ${violationInfo.speed} km/h`
       );
       logger.info(
         `Location: ${violationInfo.latitude}, ${violationInfo.longitude}`
@@ -1330,13 +1329,13 @@ class MQTTService {
             gpsTimestamp,
           },
           imageUrl: imageUrl, // Send MinIO URL instead of base64
-          driverName: driverInfo.driver_name,
-          driverLicenseNumber: driverInfo.driver_license_number,
+          driverName: payload.driver_information?.driver_name || "Unknown",
+          driverLicenseNumber: payload.driver_information?.driver_license_number || "Unknown",
         },
         latestTrip?.id
       );
 
-      logger.info(`DMS violation logged: ${behaviorName} (${violationInfo.Violation_DMS})`);
+      logger.info(`DMS violation logged: ${behaviorName} (${violationInfo.violation_dms})`);
 
       // Count total DMS violations in this session
       let dmsViolationCount = 0;
@@ -1351,7 +1350,7 @@ class MQTTService {
         device_id: deviceId,
         trip_id: latestTrip?.id,
         trip_number: latestTrip?.tripNumber,
-        behavior_violate: violationInfo.Violation_DMS,
+        behavior_violate: violationInfo.violation_dms,
         behavior_name: behaviorName,
         speed: violationInfo.speed,
         location: {
@@ -1359,8 +1358,6 @@ class MQTTService {
           longitude: violationInfo.longitude,
           gps_timestamp: violationInfo.gps_timestamp,
         },
-        driver_name: driverInfo.driver_name,
-        driver_license: driverInfo.driver_license_number,
         image_url: imageUrl, // Send URL instead of base64
         // dms_violation_count: dmsViolationCount,
         message_id: payload.message_id,
@@ -1370,7 +1367,7 @@ class MQTTService {
       // Emit to specific device room
       socketIOServer.to(`device:${deviceId}`).emit("device:dms:violation", {
         device_id: deviceId,
-        behavior_violate: violationInfo.Violation_DMS,
+        behavior_violate: violationInfo.violation_dms,
         behavior_name: behaviorName,
         speed: violationInfo.speed,
         image_url: imageUrl, // Send URL instead of base64
@@ -1399,18 +1396,17 @@ class MQTTService {
     try {
       logger.info(`Received OMS data from device: ${deviceId}`);
 
+      // Log full raw payload
+      logger.info('OMS Raw Payload:', JSON.stringify(payload, null, 2));
+
       const violationInfo = payload.violate_infomation_OMS;
-      const driverInfo = payload.driver_information;
 
-      // Map behavior code to string name - OMS only has 2 values - Violation_OMS is now number
+      // Map behavior code to string name - OMS only has 2 values - violation_oms is now number
       const behaviorNames = ['None', 'Unfasten_seat_belt'];
-      const behaviorName = behaviorNames[violationInfo.Violation_OMS] || 'Unknown';
+      const behaviorName = behaviorNames[violationInfo.violation_oms] || 'Unknown';
 
       logger.info(
-        `OMS Violation - Driver: ${driverInfo.driver_name} (${driverInfo.driver_license_number})`
-      );
-      logger.info(
-        `Behavior: ${behaviorName} (${violationInfo.Violation_OMS}), Speed: ${violationInfo.speed} km/h`
+        `OMS Violation - Behavior: ${behaviorName} (${violationInfo.violation_oms}), Speed: ${violationInfo.speed} km/h`
       );
       logger.info(
         `Location: ${violationInfo.latitude}, ${violationInfo.longitude}`
@@ -1470,13 +1466,13 @@ class MQTTService {
             gpsTimestamp,
           },
           imageUrl: imageUrl, // Send MinIO URL instead of base64
-          driverName: driverInfo.driver_name,
-          driverLicenseNumber: driverInfo.driver_license_number,
+          driverName: payload.driver_information?.driver_name || "Unknown",
+          driverLicenseNumber: payload.driver_information?.driver_license_number || "Unknown",
         },
         latestTrip?.id
       );
 
-      logger.info(`OMS violation logged: ${behaviorName} (${violationInfo.Violation_OMS})`);
+      logger.info(`OMS violation logged: ${behaviorName} (${violationInfo.violation_oms})`);
 
       // Count total OMS violations in this session
       let omsViolationCount = 0;
@@ -1491,7 +1487,7 @@ class MQTTService {
         device_id: deviceId,
         trip_id: latestTrip?.id,
         trip_number: latestTrip?.tripNumber,
-        behavior_violate: violationInfo.Violation_OMS,
+        behavior_violate: violationInfo.violation_oms,
         behavior_name: behaviorName,
         speed: violationInfo.speed,
         location: {
@@ -1499,8 +1495,6 @@ class MQTTService {
           longitude: violationInfo.longitude,
           gps_timestamp: violationInfo.gps_timestamp,
         },
-        driver_name: driverInfo.driver_name,
-        driver_license: driverInfo.driver_license_number,
         image_url: imageUrl, // Send URL instead of base64
         // oms_violation_count: omsViolationCount,
         message_id: payload.message_id,
@@ -1510,7 +1504,7 @@ class MQTTService {
       // Emit to specific device room
       socketIOServer.to(`device:${deviceId}`).emit("device:oms:violation", {
         device_id: deviceId,
-        behavior_violate: violationInfo.Violation_OMS,
+        behavior_violate: violationInfo.violation_oms,
         behavior_name: behaviorName,
         speed: violationInfo.speed,
         image_url: imageUrl, // Send URL instead of base64
