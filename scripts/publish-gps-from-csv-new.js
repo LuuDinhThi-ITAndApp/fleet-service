@@ -57,7 +57,7 @@ function loadGPSDataFromCSV() {
 
       const gpsPoint = {
         time: timestamp,
-        gps_timestamp: Math.floor(timestamp.getTime() / 1000), // Unix timestamp in seconds
+        gps_timestamp: timestamp.getTime(), // Unix timestamp in seconds
         latitude: parseFloat(latStr),
         longitude: parseFloat(lonStr),
         speed: parseFloat(speedStr),
@@ -146,7 +146,7 @@ function publishNextGPSData(vehicleId) {
       latitude: point.latitude,
       longitude: point.longitude,
       accuracy: point.accuracy,
-      speed: point.speed,
+      speed: Math.floor(point.speed),
     });
   }
 
