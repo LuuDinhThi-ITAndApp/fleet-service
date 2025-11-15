@@ -19,7 +19,6 @@ import {
   OMSPayload,
   StreamingEventPayload,
 } from "../types";
-import { GpsPoint, SnapResultData } from "../types/tracking";
 import { redisClient } from "./redis";
 import { timescaleDB } from "./timescaledb";
 import { socketIOServer } from "../server/socketio";
@@ -28,7 +27,6 @@ import { driverService } from "../services/driverService";
 import { tripService } from "../services/tripService";
 import { eventLogService } from "../services/eventLogService";
 import { CacheKeys, VehicleState } from "../utils/constants";
-import { osrmClient } from "./osrm_client";
 import { MqttTopic } from "../types/enum";
 
 class MQTTService {
@@ -262,6 +260,7 @@ class MQTTService {
           gps_data: latestGPSPoint,
         };
         await redisClient.cacheGPSData(deviceId, cacheData, this.ttlGPSCache);
+        await redisClient.cacheGPSData(this.cacheSessions.get(deviceId) || "", cacheData, this.ttlGPSCache);
       }
     } catch (error) {
       logger.error("Error caching GPS data:", error);
