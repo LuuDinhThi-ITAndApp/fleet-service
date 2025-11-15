@@ -246,6 +246,9 @@ class MQTTService {
         const maxTimestamp = Math.max(...filteredPayload.gps_data.map(p => p.gps_timestamp));
         this.lastGPSTimestampByDevice.set(deviceId, maxTimestamp);
       }
+      filteredPayload.gps_data.forEach(point => {
+        point.speed = Math.floor(point.speed);
+      });
 
       // Cache và lưu dữ liệu GPS đã lọc
       await Promise.allSettled([
@@ -651,7 +654,7 @@ class MQTTService {
       const latestTrip = await tripService.getLatestTrip(this.vehicleId);
 
       // Check if trip exists and has no end time
-      const isConfirm = latestTrip !== null && !latestTrip.endTime;
+      const isConfirm = latestTrip !== null && latestTrip.status === VehicleState.MOVING;
 
       if (isConfirm) {
         logger.info(
