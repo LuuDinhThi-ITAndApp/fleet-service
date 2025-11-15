@@ -10,7 +10,7 @@ class RedisClient {
   constructor() {
     // Try URL format first if password contains special characters
     let clientConfig;
-    
+
     if (config.redis.password) {
       // Use URL format for better special character handling
       const redisUrl = `redis://:${encodeURIComponent(config.redis.password)}@${config.redis.host}:${config.redis.port}`;
@@ -87,7 +87,7 @@ class RedisClient {
     try {
       const key = `device:${deviceId}`;
       const data = await this.client.get(key);
-      
+
       if (!data) {
         return null;
       }
@@ -198,6 +198,24 @@ class RedisClient {
       logger.error('Error deleting parking event ID:', error);
     }
   }
+
+  
+    /**
+     * Get latest GPS data from Redis cache for a device
+     */
+    async getGPSData(deviceId: string): Promise<any | null> {
+      try {
+        const key = `gps:${deviceId}:latest`;
+        const data = await this.client.get(key);
+        if (data) {
+          return typeof data === 'string' ? JSON.parse(data) : data;
+        }
+        return null;
+      } catch (error) {
+        logger.error(`Error getting GPS data from Redis for ${deviceId}:`, error);
+        return null;
+      }
+    }
 }
 
 export const redisClient = new RedisClient();

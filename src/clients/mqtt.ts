@@ -1,4 +1,5 @@
 
+
 import mqtt, { MqttClient } from "mqtt";
 import { config } from "../config";
 import { logger } from "../utils/logger";
@@ -30,6 +31,7 @@ import { CacheKeys, VehicleState } from "../utils/constants";
 import { MqttTopic } from "../types/enum";
 
 class MQTTService {
+
   private client: MqttClient | null = null;
   private messageBuffer: EdgeEvent[] = [];
   private batchSize = 50;
@@ -391,6 +393,7 @@ class MQTTService {
       logger.error("Error handling driver request:", error);
     }
   }
+
 
   /**
    * Publish driver info to MQTT topic
@@ -927,6 +930,13 @@ class MQTTService {
       const timestampMs = payload.time_stamp + this.tzOffsetMinutes;
       const timestamp = new Date(timestampMs).toISOString();
 
+      //get latest location
+      const latestGPSData = await redisClient.getGPSData(deviceId);
+      let latestLocation = null;
+      if (latestGPSData && latestGPSData.gps_data) {
+        latestLocation = latestGPSData.gps_data;
+      }
+
       // Handle parking state
       if (payload.parking_status === 0) {
         // Vehicle PARKED - Create new parking event
@@ -941,7 +951,7 @@ class MQTTService {
             trip_id: latestTrip.id,
             trip_number: latestTrip.tripNumber,
             status: VehicleState.IDLE,
-          },
+          }
         });
 
         // Update trip status to IDLE
@@ -959,6 +969,7 @@ class MQTTService {
             parkingId: payload.parking_id,
             timestamp: timestamp,
           },
+          latestLocation,
           latestTrip.id
         );
 
