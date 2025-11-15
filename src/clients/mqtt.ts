@@ -47,6 +47,7 @@ class MQTTService {
   // TODO: Get driverId from driver_license_number
   // For now, use hardcoded UUID
   private driverId = "880e8400-e29b-41d4-a716-446655440001";
+  private tzOffsetMinutes = 7 * 60 * 60 * 1000;
 
   /**
    * Connect to MQTT broker
@@ -370,7 +371,7 @@ class MQTTService {
 
       // Build driver info payload
       // Convert to UTC+7 milliseconds
-      const utc7Ms = Date.now() + 7 * 60 * 60 * 1000;
+      const utc7Ms = Date.now() + this.tzOffsetMinutes;
 
       const driverInfo: DriverInfoPayload = {
         time_stamp: utc7Ms,
@@ -449,7 +450,7 @@ class MQTTService {
 
       // Convert Unix milliseconds to UTC+7
       const checkInTimestampMs =
-        checkInData.check_in_timestamp + 7 * 60 * 60 * 1000;
+        checkInData.check_in_timestamp + this.tzOffsetMinutes;
       logger.info(
         `Check-in time: ${new Date(checkInTimestampMs).toISOString()}`
       );
@@ -522,7 +523,7 @@ class MQTTService {
       logger.info(`Creating trip for device: ${deviceId}`);
 
       // Convert Unix milliseconds to UTC+7
-      const startTimeMs = checkInData.check_in_timestamp + 7 * 60 * 60 * 1000;
+      const startTimeMs = checkInData.check_in_timestamp + this.tzOffsetMinutes;
       const startTime = new Date(startTimeMs).toISOString();
 
       // get current trip
@@ -713,7 +714,7 @@ class MQTTService {
       );
 
       // Convert to UTC+7 milliseconds
-      const utc7Ms = Date.now() + 7 * 60 * 60 * 1000;
+      const utc7Ms = Date.now() + this.tzOffsetMinutes;
 
       const responsePayload: CheckOutConfirmResponsePayload = {
         time_stamp: utc7Ms,
@@ -766,7 +767,7 @@ class MQTTService {
 
       // Convert Unix milliseconds to UTC+7
       const checkOutTimestampMs =
-        checkOutData.check_out_timestamp + 7 * 60 * 60 * 1000;
+        checkOutData.check_out_timestamp + this.tzOffsetMinutes;
       logger.info(
         `Check-out time: ${new Date(checkOutTimestampMs).toISOString()}`
       );
@@ -839,7 +840,6 @@ class MQTTService {
     try {
       logger.info(`Updating trip for device: ${deviceId} with check-out data`);
 
-
       // Get latest trip
       const latestTrip = await tripService.getLatestTrip(this.vehicleId);
 
@@ -858,7 +858,7 @@ class MQTTService {
       }
 
       // Convert Unix milliseconds to UTC+7
-      const endTimeMs = checkOutData.check_out_timestamp + 7 * 60 * 60 * 1000;
+      const endTimeMs = checkOutData.check_out_timestamp + this.tzOffsetMinutes;
       const endTime = new Date(endTimeMs).toISOString();
 
       // Format end address from location
@@ -873,7 +873,7 @@ class MQTTService {
         endTime: endTime,
         endAddress: endAddress,
         durationMinutes: checkOutData.working_duration,
-        status: "Completed",
+        status: VehicleState.COMPLETED,
       });
       // const updatedTrip = await tripService.endDrivingSession(vehicleId);
 
@@ -932,7 +932,7 @@ class MQTTService {
       }
 
       // Convert Unix milliseconds to UTC+7
-      const timestampMs = payload.time_stamp + 7 * 60 * 60 * 1000;
+      const timestampMs = payload.time_stamp + this.tzOffsetMinutes;
       const timestamp = new Date(timestampMs).toISOString();
 
       // Handle parking state
@@ -1306,10 +1306,10 @@ class MQTTService {
       }
 
       // Convert Unix milliseconds to UTC+7
-      const timestampMs = payload.time_stamp + 7 * 60 * 60 * 1000;
+      const timestampMs = payload.time_stamp + this.tzOffsetMinutes;
       const timestamp = new Date(timestampMs).toISOString();
 
-      const gpsTimestampMs = violationInfo.gps_timestamp + 7 * 60 * 60 * 1000;
+      const gpsTimestampMs = violationInfo.gps_timestamp + this.tzOffsetMinutes;
       const gpsTimestamp = new Date(gpsTimestampMs).toISOString();
 
       // Log DMS violation event with image URL
@@ -1447,10 +1447,10 @@ class MQTTService {
       }
 
       // Convert Unix milliseconds to UTC+7
-      const timestampMs = payload.time_stamp + 7 * 60 * 60 * 1000;
+      const timestampMs = payload.time_stamp + this.tzOffsetMinutes;
       const timestamp = new Date(timestampMs).toISOString();
 
-      const gpsTimestampMs = violationInfo.gps_timestamp + 7 * 60 * 60 * 1000;
+      const gpsTimestampMs = violationInfo.gps_timestamp + this.tzOffsetMinutes;
       const gpsTimestamp = new Date(gpsTimestampMs).toISOString();
 
       // Log OMS violation event with image URL
