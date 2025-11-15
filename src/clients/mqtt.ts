@@ -964,7 +964,7 @@ class MQTTService {
         // Create parking start event
         const parkingEvent = await eventLogService.logParkingStartEvent(
           payload.message_id,
-          vehicleId,
+          this.vehicleId,
           {
             parkingId: payload.parking_id,
             timestamp: timestamp,
@@ -1187,7 +1187,7 @@ class MQTTService {
       const eventId = `violation_${deviceId}_${payload.message_id}`;
       await eventLogService.logViolationEvent(
         eventId,
-        vehicleId,
+        this.vehicleId,
         {
           timestamp,
           messageId: payload.message_id,
@@ -1318,7 +1318,7 @@ class MQTTService {
       const eventId = `dms_${deviceId}_${payload.message_id}`;
       await eventLogService.logDMSEvent(
         eventId,
-        vehicleId,
+        this.vehicleId,
         {
           timestamp,
           messageId: payload.message_id,
@@ -1459,7 +1459,7 @@ class MQTTService {
       const eventId = `oms_${deviceId}_${payload.message_id}`;
       await eventLogService.logDMSEvent(
         eventId,
-        vehicleId,
+        this.vehicleId,
         {
           timestamp,
           messageId: payload.message_id,
