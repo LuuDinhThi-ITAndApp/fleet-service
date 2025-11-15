@@ -291,11 +291,11 @@ class EventLogService {
       parkingId: string;
       timestamp: string;
     },
-    latestLocation: any,
+    latestLocation?: any,
     tripId?: string
   ): Promise<EventLogResponse | null> {
     try {
-      const eventLog: EventLogRequest = {
+      const eventLog: EventLogRequest =   {
         eventId: eventId,
         sessionId: tripId,
         eventType: 'PARKING_STATE_CHANGE',
@@ -320,8 +320,8 @@ class EventLogService {
         },
         location: {
           coordinates: {
-            lat: latestLocation.gps_data.latitude,
-            lng: latestLocation.gps_data.longitude,
+            lat: latestLocation?.latitude,
+            lng: latestLocation?.longitude,
           }
         }
       };
