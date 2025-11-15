@@ -291,6 +291,7 @@ class EventLogService {
       parkingId: string;
       timestamp: string;
     },
+    latestLocation: any,
     tripId?: string
   ): Promise<EventLogResponse | null> {
     try {
@@ -317,6 +318,12 @@ class EventLogService {
           sessionId: tripId,
           notes: `Vehicle parked`,
         },
+        location: {
+          coordinates: {
+            lat: latestLocation.gps_data.latitude,
+            lng: latestLocation.gps_data.longitude,
+          }
+        }
       };
 
       logger.info('Logging parking start event:', { eventId, parkingId: parkingData.parkingId });
