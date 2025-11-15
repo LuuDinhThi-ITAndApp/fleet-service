@@ -897,6 +897,8 @@ class MQTTService {
         return updatedTrip.id;
       }
 
+      this.cacheSessions.delete(deviceId);
+
       return latestTrip.id;
     } catch (error: any) {
       logger.error("Error updating trip with check-out:", {
