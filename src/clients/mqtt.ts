@@ -139,6 +139,14 @@ class MQTTService {
         }
       }
 
+      // if no cache, get from db
+      if (!this.cacheSessions.has(deviceId)) {
+        const latestTrip = await tripService.getLatestTrip(this.vehicleId);
+        if (latestTrip) {
+          this.cacheSessions.set(deviceId, latestTrip.id);
+        }
+      }
+
       switch (matchedCase) {
         case MqttTopic.GpsData:
           await this.handleGPSData(deviceId, message as GPSDataPayload);
