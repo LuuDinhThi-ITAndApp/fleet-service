@@ -1262,10 +1262,9 @@ class MQTTService {
       const violationInfo = payload.violate_infomation_DMS;
       const driverInfo = payload.driver_information;
 
-      // Map behavior code to string name - convert string to number for array index
+      // Map behavior code to string name - Violation_DMS is now number
       const behaviorNames = ['None', 'PhoneUse', 'Drowness', 'Smoking', 'Unfocus', 'Handoff'];
-      const violationCode = parseInt(violationInfo.Violation_DMS, 10);
-      const behaviorName = behaviorNames[violationCode] || 'Unknown';
+      const behaviorName = behaviorNames[violationInfo.Violation_DMS] || 'Unknown';
 
       logger.info(
         `DMS Violation - Driver: ${driverInfo.driver_name} (${driverInfo.driver_license_number})`
@@ -1403,10 +1402,9 @@ class MQTTService {
       const violationInfo = payload.violate_infomation_OMS;
       const driverInfo = payload.driver_information;
 
-      // Map behavior code to string name - OMS only has 2 values - convert string to number for array index
+      // Map behavior code to string name - OMS only has 2 values - Violation_OMS is now number
       const behaviorNames = ['None', 'Unfasten_seat_belt'];
-      const violationCode = parseInt(violationInfo.Violation_OMS, 10);
-      const behaviorName = behaviorNames[violationCode] || 'Unknown';
+      const behaviorName = behaviorNames[violationInfo.Violation_OMS] || 'Unknown';
 
       logger.info(
         `OMS Violation - Driver: ${driverInfo.driver_name} (${driverInfo.driver_license_number})`
