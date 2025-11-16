@@ -292,7 +292,16 @@ class EventLogService {
       timestamp: string;
     },
     latestLocation?: any,
-    tripId?: string
+    tripId?: string,
+    tripData?: {
+      vehicleId?: string;
+      driverId?: string;
+      tripNumber?: string;
+      licensePlate?: string;
+      vehicleType?: string;
+      driverName?: string;
+      driverLicenseNumber?: string;
+    }
   ): Promise<EventLogResponse | null> {
     try {
       const eventLog: EventLogRequest =   {
@@ -301,8 +310,15 @@ class EventLogService {
         eventType: 'PARKING_STATE_CHANGE',
         eventSubType: 'PARKING_START',
         vehicle: {
-          vehicleId: vehicleId,
+          vehicleId: tripData?.vehicleId || vehicleId,
+          licensePlate: tripData?.licensePlate,
+          vehicleType: tripData?.vehicleType,
         },
+        driver: tripData?.driverId ? {
+          driverId: tripData.driverId,
+          name: tripData.driverName || 'Unknown',
+          licenseNumber: tripData.driverLicenseNumber || 'Unknown',
+        } : undefined,
         parking: {
           parkingId: parkingData.parkingId,
           duration: 0, // Will be updated when vehicle resumes
@@ -553,7 +569,14 @@ class EventLogService {
       driverName: string;
       driverLicenseNumber: string;
     },
-    tripId?: string
+    tripId?: string,
+    tripData?: {
+      vehicleId?: string;
+      driverId?: string;
+      tripNumber?: string;
+      licensePlate?: string;
+      vehicleType?: string;
+    }
   ): Promise<EventLogResponse | null> {
     try {
       // Create eventSubType with behavior (e.g., "drowsiness_detected", "phone_usage")
@@ -566,10 +589,12 @@ class EventLogService {
         eventType: 'vehicle_movement',
         eventSubType: eventSubType,
         vehicle: {
-          vehicleId: vehicleId,
+          vehicleId: tripData?.vehicleId || vehicleId,
+          licensePlate: tripData?.licensePlate,
+          vehicleType: tripData?.vehicleType,
         },
         driver: {
-          driverId: '', // TODO: Map license number to driver ID
+          driverId: tripData?.driverId || '',
           name: dmsData.driverName,
           licenseNumber: dmsData.driverLicenseNumber,
         },
@@ -648,7 +673,16 @@ class EventLogService {
       messageId: string;
       location: { latitude: number; longitude: number; gpsTimestamp: string };
     },
-    tripId?: string
+    tripId?: string,
+    tripData?: {
+      vehicleId?: string;
+      driverId?: string;
+      tripNumber?: string;
+      licensePlate?: string;
+      vehicleType?: string;
+      driverName?: string;
+      driverLicenseNumber?: string;
+    }
   ): Promise<EventLogResponse | null> {
     try {
       const eventLog: EventLogRequest = {
@@ -657,8 +691,15 @@ class EventLogService {
         eventType: 'safety',
         eventSubType: 'emergency_alert',
         vehicle: {
-          vehicleId: vehicleId,
+          vehicleId: tripData?.vehicleId || vehicleId,
+          licensePlate: tripData?.licensePlate,
+          vehicleType: tripData?.vehicleType,
         },
+        driver: tripData?.driverId ? {
+          driverId: tripData.driverId,
+          name: tripData.driverName || 'Unknown',
+          licenseNumber: tripData.driverLicenseNumber || 'Unknown',
+        } : undefined,
         location: {
           address: `Lat: ${emergencyData.location.latitude.toFixed(6)}, Lon: ${emergencyData.location.longitude.toFixed(6)}`,
           coordinates: {
