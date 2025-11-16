@@ -636,6 +636,69 @@ class EventLogService {
       return 0;
     }
   }
+
+  /**
+   * Log emergency event with ALERT severity
+   */
+  async logEmergencyEvent(
+    eventId: string,
+    vehicleId: string,
+    emergencyData: {
+      timestamp: string;
+      messageId: string;
+      location: { latitude: number; longitude: number; gpsTimestamp: string };
+    },
+    tripId?: string
+  ): Promise<EventLogResponse | null> {
+    try {
+      const eventLog: EventLogRequest = {
+        eventId: eventId,
+        sessionId: tripId,
+        eventType: 'safety',
+        eventSubType: 'emergency_alert',
+        vehicle: {
+          vehicleId: vehicleId,
+        },
+        location: {
+          address: `Lat: ${emergencyData.location.latitude.toFixed(6)}, Lon: ${emergencyData.location.longitude.toFixed(6)}`,
+          coordinates: {
+            lat: emergencyData.location.latitude,
+            lng: emergencyData.location.longitude,
+          },
+        },
+        status: VehicleState.MOVING,
+        severity: Severity.Alert,
+        tags: ['emergency', 'alert', 'safety'],
+        eventTimestamp: emergencyData.timestamp,
+        correlationId: tripId,
+        metadata: {
+          sessionId: tripId,
+          notes: `Emergency alert at coordinates: ${emergencyData.location.latitude.toFixed(6)}, ${emergencyData.location.longitude.toFixed(6)}. GPS Timestamp: ${emergencyData.location.gpsTimestamp}`,
+        },
+      };
+
+      logger.info('Logging emergency event:', {
+        eventId,
+        location: emergencyData.location,
+      });
+
+      const response = await this.client.post<EventLogResponse>('/api/event-logs', eventLog);
+
+      if (response.data && response.data.id) {
+        logger.info(`Emergency event logged successfully: ${response.data.id}`, {
+          sessionId: response.data.sessionId,
+          correlationId: response.data.correlationId,
+        });
+        return response.data;
+      }
+
+      return null;
+    } catch (error: any) {
+      logger.error('Error logging emergency event:', error.message);
+      // Don't throw - event logging should not block the main flow
+      return null;
+    }
+  }
 }
 
 export const eventLogService = new EventLogService();
