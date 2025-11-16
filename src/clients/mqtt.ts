@@ -975,7 +975,16 @@ class MQTTService {
             timestamp: timestamp,
           },
           latestLocation,
-          latestTrip.id
+          latestTrip.id,
+          {
+            vehicleId: latestTrip.vehicleId,
+            driverId: latestTrip.driverId,
+            tripNumber: latestTrip.tripNumber,
+            licensePlate: latestTrip.licensePlate,
+            vehicleType: latestTrip.vehicleType,
+            driverName: latestTrip.driverName,
+            driverLicenseNumber: latestTrip.licenseNumber,
+          }
         );
 
         // Cache the MongoDB event ID for later update
@@ -1051,12 +1060,17 @@ class MQTTService {
         latestTrip.id
       );
 
+      // Get updated trip to get latest idle time
+      const updatedTrip = await tripService.getLatestTrip(this.vehicleId);
+      const totalParkingTime = updatedTrip?.idleTimeSeconds || 0;
+
       // Stream to Socket.IO for real-time monitoring
       socketIOServer.emit("parking:state", {
         device_id: deviceId,
         parking_id: payload.parking_id,
         parking_state: payload.parking_status,
         parking_duration: payload.parking_duration,
+        total_parking_time: totalParkingTime,
         parking_count: parkingCount,
         trip_id: latestTrip.id,
         trip_number: latestTrip.tripNumber,
@@ -1264,12 +1278,9 @@ class MQTTService {
     try {
       logger.info(`Received DMS data from device: ${deviceId}`);
 
-      // Log full raw payload
-      logger.info(`DMS Raw Payload: ${JSON.stringify(payload, null, 2)}`);
-
       // Validate payload structure
       if (!payload.violate_infomation_DMS) {
-        logger.error(`Invalid DMS payload - missing violate_infomation_DMS field. Payload: ${JSON.stringify(payload)}`);
+        logger.error(`Invalid DMS payload - missing violate_infomation_DMS field`);
         return;
       }
 
@@ -1315,6 +1326,8 @@ class MQTTService {
         logger.info(
           `No active trip found for vehicle ${this.vehicleId}. Logging DMS event without trip.`
         );
+      } else {
+        logger.info(`Latest trip data: ${JSON.stringify(latestTrip)}`);
       }
 
       // Convert Unix milliseconds to UTC+7
@@ -1343,7 +1356,14 @@ class MQTTService {
           driverName: payload.driver_information?.driver_name || "Unknown",
           driverLicenseNumber: payload.driver_information?.driver_license_number || "Unknown",
         },
-        latestTrip?.id
+        latestTrip?.id,
+        latestTrip ? {
+          vehicleId: latestTrip.vehicleId,
+          driverId: latestTrip.driverId,
+          tripNumber: latestTrip.tripNumber,
+          licensePlate: latestTrip.licensePlate,
+          vehicleType: latestTrip.vehicleType,
+        } : undefined
       );
 
       logger.info(`DMS violation logged: ${behaviorName} (${violationInfo.violation_dms})`);
@@ -1407,12 +1427,9 @@ class MQTTService {
     try {
       logger.info(`Received OMS data from device: ${deviceId}`);
 
-      // Log full raw payload
-      logger.info(`OMS Raw Payload: ${JSON.stringify(payload, null, 2)}`);
-
       // Validate payload structure
       if (!payload.violate_infomation_OMS) {
-        logger.error(`Invalid OMS payload - missing violate_infomation_OMS field. Payload: ${JSON.stringify(payload)}`);
+        logger.error(`Invalid OMS payload - missing violate_infomation_OMS field`);
         return;
       }
 
@@ -1668,7 +1685,16 @@ class MQTTService {
             gpsTimestamp,
           },
         },
-        latestTrip?.id
+        latestTrip?.id,
+        latestTrip ? {
+          vehicleId: latestTrip.vehicleId,
+          driverId: latestTrip.driverId,
+          tripNumber: latestTrip.tripNumber,
+          licensePlate: latestTrip.licensePlate,
+          vehicleType: latestTrip.vehicleType,
+          driverName: latestTrip.driverName,
+          driverLicenseNumber: latestTrip.licenseNumber,
+        } : undefined
       );
 
       logger.error(`Emergency event processed for ${deviceId}`);
