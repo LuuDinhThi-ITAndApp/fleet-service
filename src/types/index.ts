@@ -219,3 +219,14 @@ export interface StreamingEventPayload {
   message_id: string;
   streamming_state: 0 | 1 | 2 | 3; // 0=Oms, 1=Dms, 2=Dash, 3=Off
 }
+
+// Emergency Event Types
+export interface EmergencyPayload {
+  time_stamp: number;
+  message_id: string;
+  Emergency: {
+    gps_timestamp: number;
+    latitude: number;
+    longitude: number;
+  };
+}

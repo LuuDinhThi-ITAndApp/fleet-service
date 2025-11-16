@@ -20,6 +20,7 @@ export const config = {
       dms: process.env.MQTT_TOPIC_DMS || 'fms/+/DMS',
       oms: process.env.MQTT_TOPIC_OMS || 'fms/+/OMS',
       streamingEvent: process.env.MQTT_TOPIC_STREAMMING_EVENT || 'fms/+/driving_session/streamming_event',
+      emergency: process.env.MQTT_TOPIC_EMERGENCY || 'fms/+/emergency',
     },
     clientId: `mqtt_service_${Math.random().toString(16).slice(3)}`,
   },

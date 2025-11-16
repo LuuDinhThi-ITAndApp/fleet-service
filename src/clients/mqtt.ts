@@ -19,6 +19,7 @@ import {
   DMSPayload,
   OMSPayload,
   StreamingEventPayload,
+  EmergencyPayload,
 } from "../types";
 import { redisClient } from "./redis";
 import { timescaleDB } from "./timescaledb";
@@ -106,6 +107,7 @@ class MQTTService {
       config.mqtt.topics.dms,
       config.mqtt.topics.oms,
       config.mqtt.topics.streamingEvent,
+      config.mqtt.topics.emergency,
     ];
 
     topics.forEach((topic) => {
@@ -182,6 +184,9 @@ class MQTTService {
           break;
         case MqttTopic.StreamingEvent:
           await this.handleStreamingEvent(deviceId, message as StreamingEventPayload);
+          break;
+        case MqttTopic.Emergency:
+          await this.handleEmergency(deviceId, message as EmergencyPayload);
           break;
         default: {
           // Handle generic event
@@ -1260,7 +1265,13 @@ class MQTTService {
       logger.info(`Received DMS data from device: ${deviceId}`);
 
       // Log full raw payload
-      logger.info('DMS Raw Payload:', JSON.stringify(payload, null, 2));
+      logger.info(`DMS Raw Payload: ${JSON.stringify(payload, null, 2)}`);
+
+      // Validate payload structure
+      if (!payload.violate_infomation_DMS) {
+        logger.error(`Invalid DMS payload - missing violate_infomation_DMS field. Payload: ${JSON.stringify(payload)}`);
+        return;
+      }
 
       const violationInfo = payload.violate_infomation_DMS;
 
@@ -1397,7 +1408,13 @@ class MQTTService {
       logger.info(`Received OMS data from device: ${deviceId}`);
 
       // Log full raw payload
-      logger.info('OMS Raw Payload:', JSON.stringify(payload, null, 2));
+      logger.info(`OMS Raw Payload: ${JSON.stringify(payload, null, 2)}`);
+
+      // Validate payload structure
+      if (!payload.violate_infomation_OMS) {
+        logger.error(`Invalid OMS payload - missing violate_infomation_OMS field. Payload: ${JSON.stringify(payload)}`);
+        return;
+      }
 
       const violationInfo = payload.violate_infomation_OMS;
 
@@ -1564,6 +1581,99 @@ class MQTTService {
       logger.info(`Streaming event processed successfully for ${deviceId}`);
     } catch (error) {
       logger.error("Error handling streaming event:", error);
+    }
+  }
+
+  /**
+   * Handle emergency event messages
+   * Logs with ALERT severity and forwards to Socket.IO
+   */
+  private async handleEmergency(
+    deviceId: string,
+    payload: EmergencyPayload
+  ): Promise<void> {
+    try {
+      logger.error(`🚨 EMERGENCY from device: ${deviceId}`);
+
+      // Log full raw payload
+      logger.error(`Emergency Raw Payload: ${JSON.stringify(payload, null, 2)}`);
+
+      const emergencyData = payload.Emergency;
+
+      logger.error(
+        `Emergency Location: ${emergencyData.latitude}, ${emergencyData.longitude}`
+      );
+      logger.error(
+        `GPS Timestamp: ${new Date(emergencyData.gps_timestamp).toISOString()}`
+      );
+
+      // Get latest trip
+      const latestTrip = await tripService.getLatestTrip(this.vehicleId);
+
+      // Convert Unix milliseconds to UTC+7
+      const timestampMs = payload.time_stamp + this.tzOffsetMinutes;
+      const timestamp = new Date(timestampMs).toISOString();
+
+      // Stream to Socket.IO for real-time monitoring with ALERT severity
+      socketIOServer.emit("emergency:alert", {
+        device_id: deviceId,
+        trip_id: latestTrip?.id,
+        trip_number: latestTrip?.tripNumber,
+        location: {
+          latitude: emergencyData.latitude,
+          longitude: emergencyData.longitude,
+          gps_timestamp: emergencyData.gps_timestamp,
+        },
+        message_id: payload.message_id,
+        time_stamp: payload.time_stamp,
+        timestamp: timestamp,
+      });
+
+      // Emit to specific device room with high priority
+      socketIOServer.to(`device:${deviceId}`).emit("device:emergency:alert", {
+        device_id: deviceId,
+        location: {
+          latitude: emergencyData.latitude,
+          longitude: emergencyData.longitude,
+          gps_timestamp: emergencyData.gps_timestamp,
+        },
+        trip_id: latestTrip?.id,
+        message_id: payload.message_id,
+        time_stamp: payload.time_stamp,
+      });
+
+      // Broadcast to all clients for emergency
+      socketIOServer.emit("emergency:broadcast", {
+        device_id: deviceId,
+        location: {
+          latitude: emergencyData.latitude,
+          longitude: emergencyData.longitude,
+        },
+        message_id: payload.message_id,
+        time_stamp: payload.time_stamp,
+        timestamp: timestamp,
+      });
+
+      // Log emergency event to EventLog with ALERT severity
+      const gpsTimestamp = new Date(emergencyData.gps_timestamp).toISOString();
+      await eventLogService.logEmergencyEvent(
+        payload.message_id,
+        deviceId,
+        {
+          timestamp: timestamp,
+          messageId: payload.message_id,
+          location: {
+            latitude: emergencyData.latitude,
+            longitude: emergencyData.longitude,
+            gpsTimestamp,
+          },
+        },
+        latestTrip?.id
+      );
+
+      logger.error(`Emergency event processed for ${deviceId}`);
+    } catch (error) {
+      logger.error("Error handling emergency event:", error);
     }
   }
 

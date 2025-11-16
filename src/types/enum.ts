@@ -11,4 +11,5 @@ export enum MqttTopic {
   DMS = "/DMS",
   OMS = "/OMS",
   StreamingEvent = "driving_session/streamming_event",
+  Emergency = "/emergency",
 }
