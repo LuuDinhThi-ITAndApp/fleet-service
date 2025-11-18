@@ -62,7 +62,7 @@ class MQTTService {
       clientId: config.mqtt.clientId,
       username: config.mqtt.username,
       password: config.mqtt.password,
-      clean: true,
+      clean: false,
       reconnectPeriod: 5000,
       connectTimeout: 30000,
     });
