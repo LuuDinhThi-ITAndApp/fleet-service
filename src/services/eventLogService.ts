@@ -326,7 +326,7 @@ class EventLogService {
           startTime: parkingData.timestamp,
         },
         status: VehicleState.IDLE,
-        severity: Severity.WARNING,
+        severity: Severity.INFOR,
         tags: ['parking', 'idle', 'state-change'],
         eventTimestamp: parkingData.timestamp,
         correlationId: tripId,
