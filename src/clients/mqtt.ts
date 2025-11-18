@@ -491,10 +491,11 @@ class MQTTService {
       // Create new trip with status "Working"
       let tripId = await this.createTripForCheckIn(deviceId, checkInData);
       logger.info(`🔍 DEBUG: After createTripForCheckIn, tripId = ${tripId}`);
-      if (tripId) {
-        this.cacheSessions.set(deviceId, tripId || "");
 
-        // Log check-in event
+      if (tripId) {
+        this.cacheSessions.set(deviceId, tripId);
+
+        // Log check-in event only when trip is created successfully
         await eventLogService.logCheckInEvent(
           payload.message_id,
           this.vehicleId,
@@ -522,8 +523,9 @@ class MQTTService {
           "Cannot create trip. Make sure you end the current trip before check-in."
         );
       }
-      
+
       // Stream to Socket.IO for real-time monitoring
+      // If trip creation failed, send "none" as trip_id
       socketIOServer.emit("driver:checkin", {
         device_id: deviceId,
         driver_name: driverInfo.driver_name,
@@ -537,13 +539,14 @@ class MQTTService {
         },
         message_id: payload.message_id,
         time_stamp: payload.time_stamp,
-        trip_id: tripId,
+        trip_id: tripId || "none",
       });
 
       // Emit to specific device room
       socketIOServer.to(`device:${deviceId}`).emit("device:checkin", {
         device_id: deviceId,
         ...payload,
+        trip_id: tripId || "none",
       });
     } catch (error) {
       logger.error("Error handling driver check-in:", error);
@@ -585,7 +588,9 @@ class MQTTService {
           },
         });
 
-        return existingTrip.id;
+        // Return undefined to indicate trip was NOT created (already exists)
+        // This prevents logging duplicate check-in events
+        return undefined;
       }
 
       // Generate trip number
