@@ -733,6 +733,38 @@ class EventLogService {
   }
 
   /**
+   * Get latest parking event for a session
+   * @param sessionId - Trip/Session ID
+   * @returns Latest parking event with end time, or null if none found
+   */
+  async getLatestParkingEvent(sessionId: string): Promise<EventLogResponse | null> {
+    try {
+      const response = await this.client.get<EventLogResponse[]>(
+        '/api/event-logs',
+        {
+          params: {
+            sessionId: sessionId,
+            eventType: 'PARKING_STATE_CHANGE',
+            eventSubType: 'PARKING_END',
+            limit: 1,
+            sortBy: 'eventTimestamp',
+            sortOrder: 'desc'
+          },
+        }
+      );
+
+      if (response.data && response.data.length > 0) {
+        return response.data[0];
+      }
+
+      return null;
+    } catch (error: any) {
+      logger.error('Error getting latest parking event:', error.message);
+      return null;
+    }
+  }
+
+  /**
    * Log emergency event with ALERT severity
    */
   async logEmergencyEvent(
