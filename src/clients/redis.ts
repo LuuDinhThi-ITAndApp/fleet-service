@@ -249,6 +249,52 @@ class RedisClient {
     }
   }
 
+  /**
+   * Cache the timestamp when parking ended (vehicle resumed movement)
+   * Used to calculate continuous driving time
+   * @param deviceId - The device ID
+   * @param timestamp - ISO timestamp when parking ended
+   */
+  async cacheParkingEndTime(deviceId: string, timestamp: string): Promise<void> {
+    try {
+      const key = `parking_end:${deviceId}:timestamp`;
+      // Cache for 24 hours
+      await this.client.setEx(key, 86400, timestamp);
+      logger.debug(`Cached parking end time for ${deviceId}: ${timestamp}`);
+    } catch (error) {
+      logger.error('Error caching parking end time:', error);
+    }
+  }
+
+  /**
+   * Get the timestamp when parking last ended
+   * @param deviceId - The device ID
+   * @returns ISO timestamp or null if not found
+   */
+  async getParkingEndTime(deviceId: string): Promise<string | null> {
+    try {
+      const key = `parking_end:${deviceId}:timestamp`;
+      const timestamp = await this.client.get(key);
+      return timestamp;
+    } catch (error) {
+      logger.error('Error getting parking end time:', error);
+      return null;
+    }
+  }
+
+  /**
+   * Delete cached parking end time
+   * @param deviceId - The device ID
+   */
+  async deleteParkingEndTime(deviceId: string): Promise<void> {
+    try {
+      const key = `parking_end:${deviceId}:timestamp`;
+      await this.client.del(key);
+      logger.debug(`Deleted parking end time for ${deviceId}`);
+    } catch (error) {
+      logger.error('Error deleting parking end time:', error);
+    }
+  }
 
     /**
      * Get latest GPS data from Redis cache for a device
