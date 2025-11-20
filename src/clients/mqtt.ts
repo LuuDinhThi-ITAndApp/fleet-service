@@ -1477,7 +1477,8 @@ class MQTTService {
           violations.continuous_driving_time_violate,
         parking_duration_violate: violations.parking_duration_violate,
         speed_limit_violate: violations.speed_limit_violate,
-        speed_violation_count: speedViolationCount, // Only count speed violations
+        speed_violation_count: speedViolationCount,
+        updated: false,
         message_id: payload.message_id,
         time_stamp: payload.time_stamp,
       });
