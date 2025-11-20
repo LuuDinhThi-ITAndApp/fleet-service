@@ -1309,6 +1309,7 @@ class MQTTService {
 
   /**
    * Handle continuous driving time messages
+   * Calculates duration by comparing current time with trip start time
    */
   private async handleContinuousDrivingTime(
     deviceId: string,
@@ -1317,7 +1318,7 @@ class MQTTService {
     try {
       logger.info(`Received continuous driving time from device: ${deviceId}`);
       logger.info(
-        `Continuous driving time: ${payload.continuous_driving_time} seconds, Total driving duration: ${payload.driving_duration} seconds`
+        `MQTT payload - Continuous driving time: ${payload.continuous_driving_time} seconds, Total driving duration: ${payload.driving_duration} seconds`
       );
 
       // Get latest trip
@@ -1330,22 +1331,47 @@ class MQTTService {
         return;
       }
 
-      // Update trip with continuous driving time and total duration
+      // Convert current time to UTC+7
+      const currentTimeMs = payload.time_stamp + this.tzOffsetMinutes;
+      const currentTime = new Date(currentTimeMs);
+
+      // Parse trip start time (already in UTC+7 format from DB)
+      const tripStartTime = new Date(latestTrip.startTime);
+
+      // Calculate total driving duration in seconds
+      const totalDrivingDurationSeconds = Math.floor(
+        (currentTime.getTime() - tripStartTime.getTime()) / 1000
+      );
+
+      // Get idle time from trip to calculate actual driving time (excluding idle/parking time)
+      const idleTimeSeconds = latestTrip.idleTimeSeconds || 0;
+      const actualDrivingDurationSeconds = totalDrivingDurationSeconds - idleTimeSeconds;
+
+      // Use continuous_driving_time from MQTT for continuous driving duration
+      const continuousDrivingSeconds = payload.continuous_driving_time;
+
+      logger.info(
+        `Calculated durations - Total: ${totalDrivingDurationSeconds}s, Idle: ${idleTimeSeconds}s, Actual driving: ${actualDrivingDurationSeconds}s, Continuous: ${continuousDrivingSeconds}s`
+      );
+
+      // Update trip with calculated durations
       await tripService.updateTrip(latestTrip.id, {
         startTime: latestTrip.startTime, // Required by API
-        continuousDrivingDurationSeconds: payload.continuous_driving_time,
-        durationSeconds: payload.driving_duration,
+        continuousDrivingDurationSeconds: continuousDrivingSeconds,
+        durationSeconds: totalDrivingDurationSeconds,
       });
 
       logger.info(
-        `Trip ${latestTrip.id} updated with continuous driving time: ${payload.continuous_driving_time}s`
+        `Trip ${latestTrip.id} updated with continuous driving time: ${continuousDrivingSeconds}s, total duration: ${totalDrivingDurationSeconds}s`
       );
 
       // Stream to Socket.IO for real-time monitoring
       socketIOServer.emit("driving:time", {
         device_id: deviceId,
-        continuous_driving_time: payload.continuous_driving_time,
-        driving_duration: payload.driving_duration,
+        continuous_driving_time: continuousDrivingSeconds,
+        driving_duration: totalDrivingDurationSeconds,
+        actual_driving_duration: actualDrivingDurationSeconds,
+        idle_time: idleTimeSeconds,
         message_id: payload.message_id,
         time_stamp: payload.time_stamp,
         trip_id: latestTrip.id,
@@ -1355,8 +1381,13 @@ class MQTTService {
       // Emit to specific device room
       socketIOServer.to(`device:${deviceId}`).emit("device:driving:time", {
         device_id: deviceId,
-        ...payload,
+        continuous_driving_time: continuousDrivingSeconds,
+        driving_duration: totalDrivingDurationSeconds,
+        actual_driving_duration: actualDrivingDurationSeconds,
+        idle_time: idleTimeSeconds,
         trip_id: latestTrip.id,
+        message_id: payload.message_id,
+        time_stamp: payload.time_stamp,
       });
 
       logger.info(
