@@ -1390,7 +1390,9 @@ class MQTTService {
         return;
       }
 
-      const timestamp = new Date(payload.time_stamp).toISOString();
+      // Convert Unix milliseconds to UTC+7
+      const timestampMs = payload.time_stamp + this.tzOffsetMinutes;
+      const timestamp = new Date(timestampMs).toISOString();
       const violations = payload.violation_operation;
 
       // Determine which violation is active (non-zero value)
@@ -1943,7 +1945,8 @@ class MQTTService {
       });
 
       // Log emergency event to EventLog with ALERT severity
-      const gpsTimestamp = new Date(emergencyData.gps_timestamp).toISOString();
+      const gpsTimestampMs = emergencyData.gps_timestamp + this.tzOffsetMinutes;
+      const gpsTimestamp = new Date(gpsTimestampMs).toISOString();
       await eventLogService.logEmergencyEvent(
         payload.message_id,
         deviceId,
