@@ -1049,6 +1049,41 @@ class MQTTService {
         await redisClient.deleteParkingEndTime(deviceId);
         logger.info(`Deleted parking end timestamp - vehicle is now parking`);
 
+        // Emit driving time update with continuous driving = 0 immediately
+        const currentTimeMs = Date.now() + this.tzOffsetMinutes;
+        const currentTime = new Date(currentTimeMs);
+        const tripStartTime = new Date(latestTrip.startTime);
+        const totalDrivingDurationSeconds = Math.floor(
+          (currentTime.getTime() - tripStartTime.getTime()) / 1000
+        );
+        const idleTimeSeconds = latestTrip.idleTimeSeconds || 0;
+        const actualDrivingDurationSeconds = totalDrivingDurationSeconds - idleTimeSeconds;
+
+        socketIOServer.emit("driving:time", {
+          device_id: deviceId,
+          continuous_driving_time: 0, // Reset to 0 on parking start
+          driving_duration: totalDrivingDurationSeconds,
+          actual_driving_duration: actualDrivingDurationSeconds,
+          idle_time: idleTimeSeconds,
+          time_stamp: Date.now(),
+          trip_id: latestTrip.id,
+          trip_number: latestTrip.tripNumber,
+          auto_calculated: false, // This is from parking event, not timer
+        });
+
+        socketIOServer.to(`device:${deviceId}`).emit("device:driving:time", {
+          device_id: deviceId,
+          continuous_driving_time: 0,
+          driving_duration: totalDrivingDurationSeconds,
+          actual_driving_duration: actualDrivingDurationSeconds,
+          idle_time: idleTimeSeconds,
+          trip_id: latestTrip.id,
+          time_stamp: Date.now(),
+          auto_calculated: false,
+        });
+
+        logger.info(`Emitted continuous driving time reset to 0 on parking start`);
+
         // Create parking start event
         const parkingEvent = await eventLogService.logParkingStartEvent(
           payload.message_id,
@@ -1204,6 +1239,40 @@ class MQTTService {
         // Cache parking end timestamp for continuous driving calculation
         await redisClient.cacheParkingEndTime(deviceId, timestamp);
         logger.info(`Cached parking end timestamp for continuous driving: ${timestamp}`);
+
+        // Emit driving time update with continuous driving = 0 immediately (will start counting from now)
+        const currentTimeMs = Date.now() + this.tzOffsetMinutes;
+        const currentTime = new Date(currentTimeMs);
+        const tripStartTime = new Date(latestTrip.startTime);
+        const totalDrivingDurationSeconds = Math.floor(
+          (currentTime.getTime() - tripStartTime.getTime()) / 1000
+        );
+        const actualDrivingDurationSeconds = totalDrivingDurationSeconds - newIdleTime;
+
+        socketIOServer.emit("driving:time", {
+          device_id: deviceId,
+          continuous_driving_time: 0, // Start counting from 0 after parking end
+          driving_duration: totalDrivingDurationSeconds,
+          actual_driving_duration: actualDrivingDurationSeconds,
+          idle_time: newIdleTime,
+          time_stamp: Date.now(),
+          trip_id: latestTrip.id,
+          trip_number: latestTrip.tripNumber,
+          auto_calculated: false, // This is from parking event, not timer
+        });
+
+        socketIOServer.to(`device:${deviceId}`).emit("device:driving:time", {
+          device_id: deviceId,
+          continuous_driving_time: 0,
+          driving_duration: totalDrivingDurationSeconds,
+          actual_driving_duration: actualDrivingDurationSeconds,
+          idle_time: newIdleTime,
+          trip_id: latestTrip.id,
+          time_stamp: Date.now(),
+          auto_calculated: false,
+        });
+
+        logger.info(`Emitted continuous driving time reset to 0 on parking end - will start counting from cached timestamp`);
 
         // Get the cached parking event MongoDB ID
         const parkingEventId = await redisClient.getParkingEventId(
