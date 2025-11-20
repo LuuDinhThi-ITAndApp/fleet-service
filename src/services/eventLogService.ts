@@ -146,7 +146,8 @@ class EventLogService {
       location: { latitude: number; longitude: number; accuracy: number };
       address?: string;
     },
-    tripId?: string
+    tripId?: string,
+    driverId?: string
   ): Promise<EventLogResponse | null> {
     try {
       const eventLog: EventLogRequest = {
@@ -158,7 +159,7 @@ class EventLogService {
           vehicleId: vehicleId,
         },
         driver: {
-          driverId: '', // Will be filled from trip data
+          driverId: driverId||'', 
           name: driverInfo.name,
           licenseNumber: driverInfo.licenseNumber,
         },
@@ -223,7 +224,8 @@ class EventLogService {
       location: { latitude: number; longitude: number; accuracy: number };
       address?: string;
     },
-    tripId?: string
+    tripId?: string,
+    driverId?: string
   ): Promise<EventLogResponse | null> {
     try {
       const eventLog: EventLogRequest = {
@@ -235,7 +237,7 @@ class EventLogService {
           vehicleId: vehicleId,
         },
         driver: {
-          driverId: '', // Will be filled from trip data
+          driverId: driverId||'',
           name: driverInfo.name,
           licenseNumber: driverInfo.licenseNumber,
         },
@@ -301,7 +303,7 @@ class EventLogService {
       vehicleType?: string;
       driverName?: string;
       driverLicenseNumber?: string;
-    }
+    },
   ): Promise<EventLogResponse | null> {
     try {
       const eventLog: EventLogRequest =   {
@@ -496,7 +498,8 @@ class EventLogService {
       violationValue: number;
       violationUnit: string;
     },
-    tripId?: string
+    tripId?: string,
+    driverId?: string
   ): Promise<EventLogResponse | null> {
     try {
       // Map violation type to eventSubType according to API docs
@@ -513,6 +516,11 @@ class EventLogService {
         eventSubType: eventSubTypeMap[violationData.violationType],
         vehicle: {
           vehicleId: vehicleId,
+        },
+        driver: {
+          driverId: driverId || '',
+          name: '',
+          licenseNumber: ''
         },
         violationOperation: {
           timeStamp: Math.floor(new Date(violationData.timestamp).getTime() / 1000), // Convert to Unix timestamp in seconds
