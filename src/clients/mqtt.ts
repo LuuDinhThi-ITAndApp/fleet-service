@@ -68,10 +68,22 @@ class MQTTService {
       connectTimeout: 30000,
     });
 
-    this.client.on("connect", () => {
+    this.client.on("connect", async () => {
       logger.info("MQTT connected successfully");
       this.subscribe();
-      // Timer will be started when trip begins (driver check-in)
+
+      // Check if there's an active trip and start timer if needed
+      try {
+        const latestTrip = await tripService.getLatestTrip(this.vehicleId);
+        if (latestTrip && latestTrip.status !== VehicleState.COMPLETED) {
+          logger.info(`Found active trip ${latestTrip.id} (status: ${latestTrip.status}). Starting driving time tracking.`);
+          this.startDrivingTimeTracking();
+        } else {
+          logger.info("No active trip found. Timer will start when driver checks in.");
+        }
+      } catch (error) {
+        logger.error("Error checking for active trip on connect:", error);
+      }
     });
 
     this.client.on("error", (error) => {
