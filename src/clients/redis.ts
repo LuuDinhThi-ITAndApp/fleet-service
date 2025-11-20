@@ -199,7 +199,57 @@ class RedisClient {
     }
   }
 
-  
+  /**
+   * Cache violation event MongoDB ID when violation occurs
+   * @param deviceId - The device ID
+   * @param violationType - Type of violation (CONTINUOUS_DRIVING or PARKING_DURATION)
+   * @param mongoId - MongoDB event log ID
+   */
+  async cacheViolationEventId(deviceId: string, violationType: 'CONTINUOUS_DRIVING' | 'PARKING_DURATION', mongoId: string): Promise<void> {
+    try {
+      const key = `violation:${deviceId}:${violationType}:event_id`;
+      // Cache for 24 hours
+      await this.client.setEx(key, 86400, mongoId);
+      logger.debug(`Cached violation event ID: ${deviceId}:${violationType} -> ${mongoId}`);
+    } catch (error) {
+      logger.error('Error caching violation event ID:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Get cached violation event MongoDB ID
+   * @param deviceId - The device ID
+   * @param violationType - Type of violation (CONTINUOUS_DRIVING or PARKING_DURATION)
+   * @returns MongoDB event log ID or null if not found
+   */
+  async getViolationEventId(deviceId: string, violationType: 'CONTINUOUS_DRIVING' | 'PARKING_DURATION'): Promise<string | null> {
+    try {
+      const key = `violation:${deviceId}:${violationType}:event_id`;
+      const mongoId = await this.client.get(key);
+      return mongoId;
+    } catch (error) {
+      logger.error('Error getting violation event ID:', error);
+      return null;
+    }
+  }
+
+  /**
+   * Delete cached violation event ID
+   * @param deviceId - The device ID
+   * @param violationType - Type of violation (CONTINUOUS_DRIVING or PARKING_DURATION)
+   */
+  async deleteViolationEventId(deviceId: string, violationType: 'CONTINUOUS_DRIVING' | 'PARKING_DURATION'): Promise<void> {
+    try {
+      const key = `violation:${deviceId}:${violationType}:event_id`;
+      await this.client.del(key);
+      logger.debug(`Deleted violation event ID: ${deviceId}:${violationType}`);
+    } catch (error) {
+      logger.error('Error deleting violation event ID:', error);
+    }
+  }
+
+
     /**
      * Get latest GPS data from Redis cache for a device
      */
