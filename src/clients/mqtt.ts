@@ -1047,6 +1047,92 @@ class MQTTService {
             `Cached parking event ID: ${parkingEvent.id} for parking ${payload.parking_id}`
           );
         }
+
+        // Update CONTINUOUS_DRIVING violation if exists
+        // Calculate violation duration: parking start time - violation log time
+        const continuousDrivingViolationId =
+          await redisClient.getViolationEventId(deviceId, "CONTINUOUS_DRIVING");
+        if (continuousDrivingViolationId) {
+          logger.info(
+            `Found cached CONTINUOUS_DRIVING violation event: ${continuousDrivingViolationId}. Updating with actual duration.`
+          );
+
+          try {
+            // Fetch the violation event to get its original timestamp
+            const axios = require("axios");
+            const violationEventResponse = await axios.get(
+              `${
+                require("../config").config.api.baseUrl
+              }/api/event-logs/${continuousDrivingViolationId}`
+            );
+
+            if (
+              violationEventResponse.data &&
+              violationEventResponse.data.eventTimestamp
+            ) {
+              const violationTimestampMs = new Date(
+                violationEventResponse.data.eventTimestamp
+              ).getTime();
+              const parkingStartMs = new Date(timestamp).getTime();
+
+              // Calculate actual violation duration in seconds
+              const violationDurationSeconds = Math.floor(
+                (parkingStartMs - violationTimestampMs) / 1000
+              );
+
+              logger.info(
+                `Calculated CONTINUOUS_DRIVING violation duration: ${violationDurationSeconds} seconds (from ${violationEventResponse.data.eventTimestamp} to ${timestamp})`
+              );
+
+              // Update the violation event with the actual duration
+              await eventLogService.updateViolationEvent(
+                continuousDrivingViolationId,
+                violationDurationSeconds
+              );
+
+              // Emit updated violation to Socket.IO
+              socketIOServer.emit("violation:detected", {
+                device_id: deviceId,
+                trip_id: latestTrip.id,
+                trip_number: latestTrip.tripNumber,
+                violation_type: "CONTINUOUS_DRIVING",
+                eventId: continuousDrivingViolationId,
+                continuous_driving_time_violate: violationDurationSeconds,
+                parking_duration_violate: 0,
+                speed_limit_violate: 0,
+                updated: true,
+                message_id: payload.message_id,
+                time_stamp: payload.time_stamp,
+              });
+
+              // Emit to specific device room
+              socketIOServer.to(`device:${deviceId}`).emit("device:violation", {
+                device_id: deviceId,
+                violation_type: "CONTINUOUS_DRIVING",
+                violation_value: violationDurationSeconds,
+                violation_unit: "seconds",
+                updated: true,
+                trip_id: latestTrip.id,
+                message_id: payload.message_id,
+                time_stamp: payload.time_stamp,
+              });
+
+              // Delete the cached violation event ID
+              await redisClient.deleteViolationEventId(
+                deviceId,
+                "CONTINUOUS_DRIVING"
+              );
+              logger.info(
+                `Updated and cleaned up CONTINUOUS_DRIVING violation event: ${continuousDrivingViolationId}`
+              );
+            }
+          } catch (error) {
+            logger.error(
+              "Error updating CONTINUOUS_DRIVING violation event:",
+              error
+            );
+          }
+        }
       } else {
         // Vehicle MOVING - Update existing parking event
         logger.info(
@@ -1101,6 +1187,92 @@ class MQTTService {
           logger.warn(
             `No cached parking event ID found for parking ${payload.parking_id}. Cannot update event.`
           );
+        }
+
+        // Update PARKING_DURATION violation if exists
+        // Calculate violation duration: parking end time - violation log time
+        const parkingDurationViolationId =
+          await redisClient.getViolationEventId(deviceId, "PARKING_DURATION");
+        if (parkingDurationViolationId) {
+          logger.info(
+            `Found cached PARKING_DURATION violation event: ${parkingDurationViolationId}. Updating with actual duration.`
+          );
+
+          try {
+            // Fetch the violation event to get its original timestamp
+            const axios = require("axios");
+            const violationEventResponse = await axios.get(
+              `${
+                require("../config").config.api.baseUrl
+              }/api/event-logs/${parkingDurationViolationId}`
+            );
+
+            if (
+              violationEventResponse.data &&
+              violationEventResponse.data.eventTimestamp
+            ) {
+              const violationTimestampMs = new Date(
+                violationEventResponse.data.eventTimestamp
+              ).getTime();
+              const parkingEndMs = new Date(timestamp).getTime();
+
+              // Calculate actual violation duration in seconds
+              const violationDurationSeconds = Math.floor(
+                (parkingEndMs - violationTimestampMs) / 1000
+              );
+
+              logger.info(
+                `Calculated PARKING_DURATION violation duration: ${violationDurationSeconds} seconds (from ${violationEventResponse.data.eventTimestamp} to ${timestamp})`
+              );
+
+              // Update the violation event with the actual duration
+              await eventLogService.updateViolationEvent(
+                parkingDurationViolationId,
+                violationDurationSeconds
+              );
+
+              // Emit updated violation to Socket.IO
+              socketIOServer.emit("violation:detected", {
+                device_id: deviceId,
+                trip_id: latestTrip.id,
+                trip_number: latestTrip.tripNumber,
+                violation_type: "PARKING_DURATION",
+                eventId: parkingDurationViolationId,
+                continuous_driving_time_violate: 0,
+                parking_duration_violate: violationDurationSeconds,
+                speed_limit_violate: 0,
+                updated: true,
+                message_id: payload.message_id,
+                time_stamp: payload.time_stamp,
+              });
+
+              // Emit to specific device room
+              socketIOServer.to(`device:${deviceId}`).emit("device:violation", {
+                device_id: deviceId,
+                violation_type: "PARKING_DURATION",
+                violation_value: violationDurationSeconds,
+                violation_unit: "seconds",
+                updated: true,
+                trip_id: latestTrip.id,
+                message_id: payload.message_id,
+                time_stamp: payload.time_stamp,
+              });
+
+              // Delete the cached violation event ID
+              await redisClient.deleteViolationEventId(
+                deviceId,
+                "PARKING_DURATION"
+              );
+              logger.info(
+                `Updated and cleaned up PARKING_DURATION violation event: ${parkingDurationViolationId}`
+              );
+            }
+          } catch (error) {
+            logger.error(
+              "Error updating PARKING_DURATION violation event:",
+              error
+            );
+          }
         }
       }
 
@@ -1252,7 +1424,7 @@ class MQTTService {
 
       // Log the violation event
       const eventId = `violation_${deviceId}_${payload.message_id}`;
-      await eventLogService.logViolationEvent(
+      const violationEvent = await eventLogService.logViolationEvent(
         eventId,
         this.vehicleId,
         {
@@ -1265,6 +1437,23 @@ class MQTTService {
         latestTrip.id,
         this.driverId
       );
+
+      // Cache eventId for CONTINUOUS_DRIVING and PARKING_DURATION violations
+      if (
+        violationEvent &&
+        violationEvent.id &&
+        (violationType === "CONTINUOUS_DRIVING" ||
+          violationType === "PARKING_DURATION")
+      ) {
+        await redisClient.cacheViolationEventId(
+          deviceId,
+          violationType,
+          violationEvent.id
+        );
+        logger.info(
+          `Cached violation event ID for ${violationType}: ${violationEvent.id}`
+        );
+      }
 
       logger.info(
         `Violation logged: ${violationType} = ${violationValue} ${violationUnit}`
@@ -1281,6 +1470,7 @@ class MQTTService {
       socketIOServer.emit("violation:detected", {
         device_id: deviceId,
         trip_id: latestTrip.id,
+        eventId: eventId,
         trip_number: latestTrip.tripNumber,
         violation_type: violationType,
         continuous_driving_time_violate:

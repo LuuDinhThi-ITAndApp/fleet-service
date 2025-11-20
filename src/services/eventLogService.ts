@@ -562,6 +562,68 @@ class EventLogService {
   }
 
   /**
+   * Update violation event with actual violation duration
+   * Fetches the existing event, updates the violation value, then sends the complete object
+   */
+  async updateViolationEvent(
+    mongoId: string,
+    violationDurationSeconds: number
+  ): Promise<EventLogResponse | null> {
+    try {
+      // Step 1: Fetch the existing event
+      logger.info('Fetching existing violation event:', { mongoId });
+      const getResponse = await this.client.get<EventLogResponse>(`/api/event-logs/${mongoId}`);
+
+      if (!getResponse.data || !getResponse.data.id) {
+        logger.error('Failed to fetch existing violation event');
+        return null;
+      }
+
+      const existingEvent = getResponse.data;
+      logger.info('Existing violation event fetched successfully:', {
+        id: existingEvent.id,
+        hasSessionId: !!existingEvent.sessionId,
+        hasViolationOperation: !!(existingEvent as any).violationOperation,
+      });
+
+      // Step 2: Merge existing data with updates
+      const updatedEvent = {
+        ...existingEvent,
+        violationOperation: {
+          ...(existingEvent as any).violationOperation,
+          violationValue: violationDurationSeconds,
+        },
+        metadata: {
+          ...(existingEvent as any).metadata,
+          notes: `${(existingEvent as any).metadata?.notes || 'Violation'} - Updated with actual duration: ${violationDurationSeconds} seconds`,
+        },
+      };
+
+      // Step 3: Send the complete updated object
+      logger.info('Updating violation event with actual duration:', {
+        mongoId,
+        violationDurationSeconds,
+        hasSessionId: !!updatedEvent.sessionId,
+      });
+      const response = await this.client.put<EventLogResponse>(`/api/event-logs/${mongoId}`, updatedEvent);
+
+      if (response.data && response.data.id) {
+        logger.info(`Violation event updated successfully: ${response.data.id}`, {
+          sessionId: response.data.sessionId,
+          correlationId: response.data.correlationId,
+        });
+        return response.data;
+      }
+
+      return null;
+    } catch (error: any) {
+      logger.error('Error updating violation event:', error.message);
+      // Don't throw - event logging should not block the main flow
+      return null;
+    }
+  }
+
+  /**
    * Log DMS (Driver Monitoring System) violation event
    */
   async logDMSEvent(
