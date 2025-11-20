@@ -514,7 +514,8 @@ class MQTTService {
               6
             )}, Lon: ${location.longitude.toFixed(6)}`,
           },
-          tripId
+          tripId,
+          this.driverId
         );
 
         logger.info(`Driver check-in processed successfully for ${deviceId}`);
@@ -865,7 +866,8 @@ class MQTTService {
             6
           )}, Lon: ${location.longitude.toFixed(6)}`,
         },
-        tripId
+        tripId,
+        this.driverId
       );
 
       logger.info(`Driver check-out processed successfully for ${deviceId}`);
@@ -1228,15 +1230,15 @@ class MQTTService {
       let violationValue = 0;
       let violationUnit = "";
 
-      if (violations.continuous_driving_time_violate > 0) {
+      if (violations.continuous_driving_time_violate >= 0) {
         violationType = "CONTINUOUS_DRIVING";
         violationValue = violations.continuous_driving_time_violate;
         violationUnit = "minutes";
-      } else if (violations.parking_duration_violate > 0) {
+      } else if (violations.parking_duration_violate >= 0) {
         violationType = "PARKING_DURATION";
         violationValue = violations.parking_duration_violate;
         violationUnit = "minutes";
-      } else if (violations.speed_limit_violate > 0) {
+      } else if (violations.speed_limit_violate >= 0) {
         violationType = "SPEED_LIMIT";
         violationValue = violations.speed_limit_violate;
         violationUnit = "km/h";
@@ -1260,7 +1262,8 @@ class MQTTService {
           violationValue,
           violationUnit,
         },
-        latestTrip.id
+        latestTrip.id,
+        this.driverId
       );
 
       logger.info(
@@ -1568,7 +1571,15 @@ class MQTTService {
           driverLicenseNumber:
             payload.driver_information?.driver_license_number || "Unknown",
         },
-        latestTrip?.id
+        latestTrip?.id,
+        latestTrip
+          ? {
+              vehicleId: latestTrip.vehicleId,
+              driverId: latestTrip.driverId,
+              tripNumber: latestTrip.tripNumber,
+              licensePlate: latestTrip.licensePlate,
+            }
+          : undefined
       );
 
       logger.info(
