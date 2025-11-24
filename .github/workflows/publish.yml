@@ -17,7 +17,7 @@ env:
 jobs:
   build-and-push:
     name: Build and Push to GHCR
-    runs-on: ubuntu-latest
+    runs-on: fleet-service
     permissions:
       contents: read
       packages: write
@@ -76,7 +76,7 @@ jobs:
   update-deployment:
     name: Update Deployment Info
     needs: build-and-push
-    runs-on: ubuntu-latest
+    runs-on: fleet-service
     if: github.event_name == 'release' || github.ref == 'refs/heads/main'
     
     steps:
