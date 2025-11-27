@@ -1792,8 +1792,26 @@ class MQTTService {
       const timestampMs = payload.time_stamp + this.tzOffsetMinutes;
       const timestamp = new Date(timestampMs).toISOString();
 
-      const gpsTimestampMs = violationInfo.gps_timestamp + this.tzOffsetMinutes;
-      const gpsTimestamp = new Date(gpsTimestampMs).toISOString();
+      // Get latest GPS data from Redis cache instead of MQTT payload
+      const latestGPSData = await redisClient.getGPSData(deviceId);
+      let latitude = 0;
+      let longitude = 0;
+      let gpsTimestamp = timestamp;
+
+      if (latestGPSData && latestGPSData.gps_data) {
+        latitude = latestGPSData.gps_data.latitude;
+        longitude = latestGPSData.gps_data.longitude;
+
+        // Use GPS timestamp from cache if available
+        if (latestGPSData.time_stamp) {
+          const gpsTimestampMs = latestGPSData.time_stamp + this.tzOffsetMinutes;
+          gpsTimestamp = new Date(gpsTimestampMs).toISOString();
+        }
+
+        logger.info(`Using GPS from Redis cache: lat=${latitude}, lng=${longitude}`);
+      } else {
+        logger.warn(`No GPS cache found for ${deviceId}, using default coordinates`);
+      }
 
       // Log DMS violation event with image URL
       const eventId = `dms_${deviceId}_${payload.message_id}`;
@@ -1806,8 +1824,8 @@ class MQTTService {
           behaviorViolate: behaviorName,
           speed: violationInfo.speed,
           location: {
-            latitude: violationInfo.latitude,
-            longitude: violationInfo.longitude,
+            latitude: latitude,
+            longitude: longitude,
             gpsTimestamp,
           },
           imageUrl: imageUrl, // Send MinIO URL instead of base64
@@ -1848,9 +1866,9 @@ class MQTTService {
         behavior_name: behaviorName,
         speed: violationInfo.speed,
         location: {
-          latitude: violationInfo.latitude,
-          longitude: violationInfo.longitude,
-          gps_timestamp: violationInfo.gps_timestamp,
+          latitude: latitude,
+          longitude: longitude,
+          gps_timestamp: latestGPSData?.time_stamp || payload.time_stamp,
         },
         image_url: imageUrl, // Send URL instead of base64
         // dms_violation_count: dmsViolationCount,
@@ -1947,8 +1965,26 @@ class MQTTService {
       const timestampMs = payload.time_stamp + this.tzOffsetMinutes;
       const timestamp = new Date(timestampMs).toISOString();
 
-      const gpsTimestampMs = violationInfo.gps_timestamp + this.tzOffsetMinutes;
-      const gpsTimestamp = new Date(gpsTimestampMs).toISOString();
+      // Get latest GPS data from Redis cache instead of MQTT payload
+      const latestGPSData = await redisClient.getGPSData(deviceId);
+      let latitude = 0;
+      let longitude = 0;
+      let gpsTimestamp = timestamp;
+
+      if (latestGPSData && latestGPSData.gps_data) {
+        latitude = latestGPSData.gps_data.latitude;
+        longitude = latestGPSData.gps_data.longitude;
+
+        // Use GPS timestamp from cache if available
+        if (latestGPSData.time_stamp) {
+          const gpsTimestampMs = latestGPSData.time_stamp + this.tzOffsetMinutes;
+          gpsTimestamp = new Date(gpsTimestampMs).toISOString();
+        }
+
+        logger.info(`Using GPS from Redis cache: lat=${latitude}, lng=${longitude}`);
+      } else {
+        logger.warn(`No GPS cache found for ${deviceId}, using default coordinates`);
+      }
 
       // Log OMS violation event with image URL
       const eventId = `oms_${deviceId}_${payload.message_id}`;
@@ -1961,8 +1997,8 @@ class MQTTService {
           behaviorViolate: behaviorName,
           speed: violationInfo.speed,
           location: {
-            latitude: violationInfo.latitude,
-            longitude: violationInfo.longitude,
+            latitude: latitude,
+            longitude: longitude,
             gpsTimestamp,
           },
           imageUrl: imageUrl, // Send MinIO URL instead of base64
@@ -2002,9 +2038,9 @@ class MQTTService {
         behavior_name: behaviorName,
         speed: violationInfo.speed,
         location: {
-          latitude: violationInfo.latitude,
-          longitude: violationInfo.longitude,
-          gps_timestamp: violationInfo.gps_timestamp,
+          latitude: latitude,
+          longitude: longitude,
+          gps_timestamp: latestGPSData?.time_stamp || payload.time_stamp,
         },
         image_url: imageUrl, // Send URL instead of base64
         // oms_violation_count: omsViolationCount,
