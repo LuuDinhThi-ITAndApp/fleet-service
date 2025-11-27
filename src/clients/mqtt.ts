@@ -1024,6 +1024,10 @@ class MQTTService {
         await redisClient.deleteParkingEndTime(deviceId);
         logger.info(`Cleaned up parking end timestamp cache for completed trip`);
 
+        // Clean up cached driving start time
+        await redisClient.deleteDrivingStartTime(deviceId);
+        logger.info(`Cleaned up driving start timestamp cache for completed trip`);
+
         return updatedTrip.id;
       }
 
@@ -1102,6 +1106,10 @@ class MQTTService {
         // Delete cached parking end time since we're parking again
         await redisClient.deleteParkingEndTime(deviceId);
         logger.info(`Deleted parking end timestamp - vehicle is now parking`);
+
+        // Delete cached driving start time since we're parked (speed-based tracking)
+        await redisClient.deleteDrivingStartTime(deviceId);
+        logger.info(`Deleted driving start timestamp - vehicle is now parking`);
 
         // Emit driving time update with continuous driving = 0 immediately
         const currentTimeMs = Date.now() + this.tzOffsetMinutes;
@@ -1282,7 +1290,7 @@ class MQTTService {
         );
 
         // Update trip status to MOVING, add idle time, and reset continuous driving to 0
-        // Continuous driving will start counting from 0 again via timer
+        // Continuous driving will start counting from 0 again via timer (when speed >= 3)
         await tripService.updateTrip(latestTrip.id, {
           startTime: latestTrip.startTime, // Required by API
           status: VehicleState.MOVING,
@@ -1290,9 +1298,13 @@ class MQTTService {
           continuousDrivingDurationSeconds: 0, // Reset to 0, timer will start counting up
         });
 
-        // Cache parking end timestamp for continuous driving calculation
+        // Cache parking end timestamp for continuous driving calculation (legacy)
         await redisClient.cacheParkingEndTime(deviceId, timestamp);
         logger.info(`Cached parking end timestamp for continuous driving: ${timestamp}`);
+
+        // Delete cached driving start time - will be set when speed >= 3 km/h
+        await redisClient.deleteDrivingStartTime(deviceId);
+        logger.info(`Deleted driving start timestamp - will restart when speed >= 3 km/h`);
 
         // Emit driving time update with continuous driving = 0 immediately (will start counting from now)
         const currentTimeMs = Date.now() + this.tzOffsetMinutes;
@@ -1501,6 +1513,13 @@ class MQTTService {
   /**
    * Calculate and emit driving time data
    * Called automatically every minute when trip is active
+   * NEW LOGIC: Continuous driving time counts from when velocity >= 3 km/h until parking event
+   *
+   * Flow:
+   * 1. When first GPS with speed >= 3: cache driving_start_time
+   * 2. Timer calculates: current_time - driving_start_time
+   * 3. When parking event occurs: reset to 0 and delete cached driving_start_time
+   * 4. After parking ends: wait for speed >= 3 to start counting again
    */
   private async calculateAndEmitDrivingTime(): Promise<void> {
     try {
@@ -1537,30 +1556,50 @@ class MQTTService {
       const idleTimeSeconds = latestTrip.idleTimeSeconds || 0;
       const actualDrivingDurationSeconds = totalDrivingDurationSeconds - idleTimeSeconds;
 
-      // Calculate continuous driving time
-      // Continuous driving is triggered by parking events:
-      // - When parking starts: reset to 0 (in handleParkingState)
-      // - When parking ends: cache timestamp in Redis, start counting from 0
-      // - Timer: calculate from cached parking end time to current time
+      // Get device ID (TODO: Map from vehicleId to deviceId)
+      const deviceId = "vehicle_001";
 
+      // Get current speed from GPS cache
+      const latestGPSData = await redisClient.getGPSData(deviceId);
+      const currentSpeed = latestGPSData?.gps_data?.speed || 0;
+
+      // Calculate continuous driving time
+      // Counts from when speed first >= 3 km/h until parking event
       let continuousDrivingSeconds = 0;
 
       if (latestTrip.status === VehicleState.IDLE) {
         // Vehicle is parking, continuous driving = 0
         continuousDrivingSeconds = 0;
       } else if (latestTrip.status === VehicleState.MOVING) {
-        // Vehicle is moving, calculate from last parking end time
-        const deviceId = "vehicle_001"; // TODO: Map from vehicleId to deviceId
-        const parkingEndTime = await redisClient.getParkingEndTime(deviceId);
+        // Vehicle status is MOVING
+        // Check if we have a cached driving start time
+        let drivingStartTime = await redisClient.getDrivingStartTime(deviceId);
 
-        if (parkingEndTime) {
-          // Calculate from last parking end time to now
-          const parkingEndMs = new Date(parkingEndTime).getTime();
+        if (!drivingStartTime && currentSpeed >= 3) {
+          // No cached start time AND speed >= 3: Start tracking now
+          const currentTimeIso = currentTime.toISOString();
+          await redisClient.cacheDrivingStartTime(deviceId, currentTimeIso);
+          drivingStartTime = currentTimeIso;
+          logger.info(
+            `Speed ${currentSpeed} km/h >= 3. Started continuous driving tracking at ${currentTimeIso}`
+          );
+        }
+
+        if (drivingStartTime) {
+          // Calculate from driving start time to now (regardless of current speed)
+          const drivingStartMs = new Date(drivingStartTime).getTime();
           const currentMs = currentTime.getTime();
-          continuousDrivingSeconds = Math.floor((currentMs - parkingEndMs) / 1000);
+          continuousDrivingSeconds = Math.floor((currentMs - drivingStartMs) / 1000);
+
+          logger.debug(
+            `Continuous driving: ${continuousDrivingSeconds}s (from ${drivingStartTime}, current speed: ${currentSpeed} km/h)`
+          );
         } else {
-          // No parking event yet, calculate from trip start
-          continuousDrivingSeconds = actualDrivingDurationSeconds;
+          // No driving start time cached yet (waiting for speed >= 3)
+          continuousDrivingSeconds = 0;
+          logger.debug(
+            `Waiting for speed >= 3 km/h to start tracking (current: ${currentSpeed} km/h)`
+          );
         }
       }
 
@@ -1568,7 +1607,7 @@ class MQTTService {
       continuousDrivingSeconds = Math.max(0, continuousDrivingSeconds);
 
       logger.debug(
-        `Driving time calculated - Total: ${totalDrivingDurationSeconds}s, Idle: ${idleTimeSeconds}s, Actual: ${actualDrivingDurationSeconds}s, Continuous: ${continuousDrivingSeconds}s`
+        `Driving time calculated - Total: ${totalDrivingDurationSeconds}s, Idle: ${idleTimeSeconds}s, Actual: ${actualDrivingDurationSeconds}s, Continuous: ${continuousDrivingSeconds}s, Speed: ${currentSpeed} km/h`
       );
 
       // Update trip with calculated durations
@@ -1579,14 +1618,13 @@ class MQTTService {
       });
 
       // Stream to Socket.IO for real-time monitoring
-      const deviceId = "vehicle_001"; // TODO: Map from vehicleId to deviceId
-
       socketIOServer.emit("driving:time", {
         device_id: deviceId,
         continuous_driving_time: continuousDrivingSeconds,
         driving_duration: totalDrivingDurationSeconds,
         actual_driving_duration: actualDrivingDurationSeconds,
         idle_time: idleTimeSeconds,
+        current_speed: currentSpeed,
         time_stamp: Date.now(),
         trip_id: latestTrip.id,
         trip_number: latestTrip.tripNumber,
@@ -1600,6 +1638,7 @@ class MQTTService {
         driving_duration: totalDrivingDurationSeconds,
         actual_driving_duration: actualDrivingDurationSeconds,
         idle_time: idleTimeSeconds,
+        current_speed: currentSpeed,
         trip_id: latestTrip.id,
         time_stamp: Date.now(),
         auto_calculated: true,

@@ -296,6 +296,53 @@ class RedisClient {
     }
   }
 
+  /**
+   * Cache the timestamp when continuous driving started (speed >= 3 km/h)
+   * Used to calculate continuous driving time based on GPS speed
+   * @param deviceId - The device ID
+   * @param timestamp - ISO timestamp when continuous driving started
+   */
+  async cacheDrivingStartTime(deviceId: string, timestamp: string): Promise<void> {
+    try {
+      const key = `driving_start:${deviceId}:timestamp`;
+      // Cache for 24 hours
+      await this.client.setEx(key, 86400, timestamp);
+      logger.debug(`Cached driving start time for ${deviceId}: ${timestamp}`);
+    } catch (error) {
+      logger.error('Error caching driving start time:', error);
+    }
+  }
+
+  /**
+   * Get the timestamp when continuous driving last started
+   * @param deviceId - The device ID
+   * @returns ISO timestamp or null if not found
+   */
+  async getDrivingStartTime(deviceId: string): Promise<string | null> {
+    try {
+      const key = `driving_start:${deviceId}:timestamp`;
+      const timestamp = await this.client.get(key);
+      return timestamp;
+    } catch (error) {
+      logger.error('Error getting driving start time:', error);
+      return null;
+    }
+  }
+
+  /**
+   * Delete cached driving start time
+   * @param deviceId - The device ID
+   */
+  async deleteDrivingStartTime(deviceId: string): Promise<void> {
+    try {
+      const key = `driving_start:${deviceId}:timestamp`;
+      await this.client.del(key);
+      logger.debug(`Deleted driving start time for ${deviceId}`);
+    } catch (error) {
+      logger.error('Error deleting driving start time:', error);
+    }
+  }
+
     /**
      * Get latest GPS data from Redis cache for a device
      */
