@@ -1,4 +1,5 @@
 import mqtt, { MqttClient } from "mqtt";
+import axios from "axios";
 import { config } from "../config";
 import { logger } from "../utils/logger";
 import {
@@ -52,6 +53,45 @@ class MQTTService {
   // Driving time tracking
   private drivingTimeTimer: NodeJS.Timeout | null = null;
   private drivingTimeInterval = 60000; // 1 minute in milliseconds
+
+  /**
+   * Get address from coordinates using reverse geocoding API
+   * @param longitude - Longitude coordinate
+   * @param latitude - Latitude coordinate
+   * @returns Address string or empty string if failed
+   */
+  private async getReverseGeocodingAddress(
+    longitude: number,
+    latitude: number
+  ): Promise<string> {
+    try {
+      // Skip if coordinates are invalid (0,0)
+      if (longitude === 0 && latitude === 0) {
+        return "";
+      }
+
+      const url = `${config.reverseGeocoding.apiUrl}/${longitude}/${latitude}.js`;
+      const response = await axios.get(url, { timeout: 5000 });
+
+      if (
+        response.data &&
+        response.data.results &&
+        response.data.results.length > 0
+      ) {
+        const displayName = response.data.results[0].display_name;
+        logger.debug(`Reverse geocoding: ${displayName}`);
+        return displayName || "";
+      }
+
+      return "";
+    } catch (error) {
+      logger.warn(
+        `Failed to get reverse geocoding for ${longitude},${latitude}:`,
+        error instanceof Error ? error.message : error
+      );
+      return "";
+    }
+  }
 
   /**
    * Connect to MQTT broker
@@ -542,6 +582,12 @@ class MQTTService {
         );
       }
 
+      // Get address from reverse geocoding
+      const address = await this.getReverseGeocodingAddress(
+        location.longitude,
+        location.latitude
+      );
+
       // Stream to Socket.IO for real-time monitoring
       // If trip creation failed, send "none" as trip_id
       socketIOServer.emit("driver:checkin", {
@@ -554,6 +600,7 @@ class MQTTService {
           longitude: location.longitude,
           accuracy: location.accuracy,
           gps_timestamp: location.gps_timestamp,
+          address: address,
         },
         message_id: payload.message_id,
         time_stamp: payload.time_stamp,
@@ -841,6 +888,12 @@ class MQTTService {
       logger.info(`Working duration: ${checkOutData.working_duration} minutes`);
       logger.info(`Location: ${location.latitude}, ${location.longitude}`);
 
+      // Get address from reverse geocoding
+      const address = await this.getReverseGeocodingAddress(
+        location.longitude,
+        location.latitude
+      );
+
       // Stream to Socket.IO for real-time monitoring
       socketIOServer.emit("driver:checkout", {
         device_id: "deviceId",
@@ -853,6 +906,7 @@ class MQTTService {
           longitude: location.longitude,
           accuracy: location.accuracy,
           gps_timestamp: location.gps_timestamp,
+          address: address,
         },
         message_id: payload.message_id,
         time_stamp: payload.time_stamp,
@@ -1857,6 +1911,9 @@ class MQTTService {
         );
       }
 
+      // Get address from reverse geocoding
+      const address = await this.getReverseGeocodingAddress(longitude, latitude);
+
       // Stream to Socket.IO for real-time monitoring with image URL
       socketIOServer.emit("dms:violation", {
         device_id: deviceId,
@@ -1869,6 +1926,7 @@ class MQTTService {
           latitude: latitude,
           longitude: longitude,
           gps_timestamp: latestGPSData?.time_stamp || payload.time_stamp,
+          address: address,
         },
         image_url: imageUrl, // Send URL instead of base64
         // dms_violation_count: dmsViolationCount,
@@ -2029,6 +2087,9 @@ class MQTTService {
         );
       }
 
+      // Get address from reverse geocoding
+      const address = await this.getReverseGeocodingAddress(longitude, latitude);
+
       // Stream to Socket.IO for real-time monitoring with image URL
       socketIOServer.emit("oms:violation", {
         device_id: deviceId,
@@ -2041,6 +2102,7 @@ class MQTTService {
           latitude: latitude,
           longitude: longitude,
           gps_timestamp: latestGPSData?.time_stamp || payload.time_stamp,
+          address: address,
         },
         image_url: imageUrl, // Send URL instead of base64
         // oms_violation_count: omsViolationCount,
@@ -2146,6 +2208,12 @@ class MQTTService {
       const timestampMs = payload.time_stamp + this.tzOffsetMinutes;
       const timestamp = new Date(timestampMs).toISOString();
 
+      // Get address from reverse geocoding
+      const address = await this.getReverseGeocodingAddress(
+        emergencyData.longitude,
+        emergencyData.latitude
+      );
+
       // Stream to Socket.IO for real-time monitoring with ALERT severity
       socketIOServer.emit("emergency:alert", {
         device_id: deviceId,
@@ -2155,6 +2223,7 @@ class MQTTService {
           latitude: emergencyData.latitude,
           longitude: emergencyData.longitude,
           gps_timestamp: emergencyData.gps_timestamp,
+          address: address,
         },
         message_id: payload.message_id,
         time_stamp: payload.time_stamp,
@@ -2168,6 +2237,7 @@ class MQTTService {
           latitude: emergencyData.latitude,
           longitude: emergencyData.longitude,
           gps_timestamp: emergencyData.gps_timestamp,
+          address: address,
         },
         trip_id: latestTrip?.id,
         message_id: payload.message_id,
@@ -2180,6 +2250,7 @@ class MQTTService {
         location: {
           latitude: emergencyData.latitude,
           longitude: emergencyData.longitude,
+          address: address,
         },
         message_id: payload.message_id,
         time_stamp: payload.time_stamp,

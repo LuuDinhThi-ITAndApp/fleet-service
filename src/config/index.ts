@@ -55,4 +55,7 @@ export const config = {
     useSSL: process.env.MINIO_USE_SSL === 'true',
     bucket: process.env.MINIO_BUCKET || 'fleet-snapshots',
   },
+  reverseGeocoding: {
+    apiUrl: process.env.REVERSE_GEOCODING_API_URL || 'http://103.216.116.186:8060/r',
+  },
 };
