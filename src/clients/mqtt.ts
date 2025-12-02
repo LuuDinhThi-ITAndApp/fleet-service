@@ -70,17 +70,41 @@ class MQTTService {
         return "";
       }
 
-      const url = `${config.reverseGeocoding.apiUrl}/${longitude}/${latitude}.js`;
+      const url = `${config.reverseGeocoding.apiUrl}?lat=${latitude}&lon=${longitude}&format=json&addressdetails=1&accept-language=vi`;
       const response = await axios.get(url, { timeout: 5000 });
 
-      if (
-        response.data &&
-        response.data.results &&
-        response.data.results.length > 0
-      ) {
-        const displayName = response.data.results[0].display_name;
-        logger.debug(`Reverse geocoding: ${displayName}`);
-        return displayName || "";
+      if (response.data && response.data.address) {
+        const addr = response.data.address;
+        const countryCode = addr.country_code?.toLowerCase();
+
+        let formattedAddress = "";
+
+        if (countryCode === "vn") {
+          const parts = [
+            addr.road,
+            addr.quarter || addr.suburb || addr.neighbourhood,
+            addr.city || addr.town || addr.city_district || addr.county,
+          ].filter(Boolean);
+          formattedAddress = parts.join(", ");
+        } else if (countryCode === "my") {
+          const parts = [
+            addr.road,
+            addr.neighbourhood || addr.suburb || addr.quarter,
+            addr.city || addr.district,
+            addr.state,
+          ].filter(Boolean);
+          formattedAddress = parts.join(", ");
+        } else {
+          const parts = [
+            addr.road,
+            addr.neighbourhood || addr.suburb || addr.quarter,
+            addr.city || addr.town || addr.village,
+          ].filter(Boolean);
+          formattedAddress = parts.join(", ");
+        }
+
+        logger.debug(`Reverse geocoding: ${formattedAddress}`);
+        return formattedAddress || response.data.display_name || "";
       }
 
       return "";
