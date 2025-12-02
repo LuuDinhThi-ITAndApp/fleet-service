@@ -71,7 +71,7 @@ class MQTTService {
       }
 
       const url = `${config.reverseGeocoding.apiUrl}?lat=${latitude}&lon=${longitude}&format=json&addressdetails=1&accept-language=vi`;
-      const response = await axios.get(url, { timeout: 5000 });
+      const response = await axios.get(url, { timeout: 10000 });
 
       if (response.data && response.data.address) {
         const addr = response.data.address;
@@ -80,11 +80,13 @@ class MQTTService {
         let formattedAddress = "";
 
         if (countryCode === "vn") {
-          const parts = [
-            addr.road,
-            addr.quarter || addr.suburb || addr.neighbourhood,
-            addr.city || addr.town || addr.city_district || addr.county,
-          ].filter(Boolean);
+          // Vietnam address structure: Road, Ward/District, City/Province
+          // Note: city_district contains ward info, city or state contains city/province
+          const road = addr.road;
+          const ward = addr.city_district || addr.quarter || addr.suburb || addr.neighbourhood;
+          const cityProvince = addr.state || addr.county || (addr.city_district ? addr.city : null) || addr.city;
+
+          const parts = [road, ward, cityProvince].filter(Boolean);
           formattedAddress = parts.join(", ");
         } else if (countryCode === "my") {
           const parts = [
@@ -110,8 +112,8 @@ class MQTTService {
       return "";
     } catch (error) {
       logger.warn(
-        `Failed to get reverse geocoding for ${longitude},${latitude}:`,
-        error instanceof Error ? error.message : error
+        `Failed to get reverse geocoding for lon=${longitude}, lat=${latitude}:`,
+        error instanceof Error ? error.message : String(error)
       );
       return "";
     }
