@@ -1749,6 +1749,9 @@ class MQTTService {
         return;
       }
 
+      // Generate video URL from messageId
+      const videoUrl = `http://103.216.116.186:9000/fleet-videos/${payload.message_id}.mp4`;
+
       // Log the violation event
       const eventId = `violation_${deviceId}_${payload.message_id}`;
       const violationEvent = await eventLogService.logViolationEvent(
@@ -1760,6 +1763,7 @@ class MQTTService {
           violationType,
           violationValue,
           violationUnit,
+          videoUrl: videoUrl, // Add video attachment
         },
         latestTrip.id,
         this.driverId
@@ -1932,7 +1936,10 @@ class MQTTService {
         logger.warn(`No GPS cache found for ${deviceId}, using default coordinates`);
       }
 
-      // Log DMS violation event with image URL
+      // Generate video URL from messageId
+      const videoUrl = `http://103.216.116.186:9000/fleet-videos/${payload.message_id}.mp4`;
+
+      // Log DMS violation event with image URL and video URL
       const eventId = `dms_${deviceId}_${payload.message_id}`;
       await eventLogService.logDMSEvent(
         eventId,
@@ -1948,6 +1955,7 @@ class MQTTService {
             gpsTimestamp,
           },
           imageUrl: imageUrl, // Send MinIO URL instead of base64
+          videoUrl: videoUrl, // Send video URL
           driverName: payload.driver_information?.driver_name || "Unknown",
           driverLicenseNumber:
             payload.driver_information?.driver_license_number || "Unknown",
@@ -2109,7 +2117,10 @@ class MQTTService {
         logger.warn(`No GPS cache found for ${deviceId}, using default coordinates`);
       }
 
-      // Log OMS violation event with image URL
+      // Generate video URL from messageId
+      const videoUrl = `http://103.216.116.186:9000/fleet-videos/${payload.message_id}.mp4`;
+
+      // Log OMS violation event with image URL and video URL
       const eventId = `oms_${deviceId}_${payload.message_id}`;
       await eventLogService.logDMSEvent(
         eventId,
@@ -2125,6 +2136,7 @@ class MQTTService {
             gpsTimestamp,
           },
           imageUrl: imageUrl, // Send MinIO URL instead of base64
+          videoUrl: videoUrl, // Send video URL
           driverName: payload.driver_information?.driver_name || "Unknown",
           driverLicenseNumber:
             payload.driver_information?.driver_license_number || "Unknown",

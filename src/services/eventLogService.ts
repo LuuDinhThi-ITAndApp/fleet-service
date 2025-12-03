@@ -497,6 +497,7 @@ class EventLogService {
       violationType: 'CONTINUOUS_DRIVING' | 'PARKING_DURATION' | 'SPEED_LIMIT';
       violationValue: number;
       violationUnit: string;
+      videoUrl?: string;
     },
     tripId?: string,
     driverId?: string
@@ -535,6 +536,7 @@ class EventLogService {
         metadata: {
           sessionId: tripId,
           notes: `${violationData.violationType} violation: ${violationData.violationValue} ${violationData.violationUnit}`,
+          attachments: violationData.videoUrl ? [violationData.videoUrl] : [],
         },
       };
 
@@ -636,6 +638,7 @@ class EventLogService {
       speed: number;
       location: { latitude: number; longitude: number; gpsTimestamp: string };
       imageUrl: string;
+      videoUrl?: string;
       driverName: string;
       driverLicenseNumber: string;
     },
@@ -683,7 +686,10 @@ class EventLogService {
         metadata: {
           sessionId: tripId,
           notes: `DMS Violation: ${dmsData.behaviorViolate} at ${dmsData.speed} km/h`,
-          attachments: dmsData.imageUrl ? [dmsData.imageUrl] : [],
+          attachments: [
+            ...(dmsData.imageUrl ? [dmsData.imageUrl] : []),
+            ...(dmsData.videoUrl ? [dmsData.videoUrl] : []),
+          ],
         },
       };
 
