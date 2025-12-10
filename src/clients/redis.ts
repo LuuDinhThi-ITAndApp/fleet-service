@@ -343,6 +343,52 @@ class RedisClient {
     }
   }
 
+  /**
+   * Cache continuous driving time received from MQTT
+   * @param deviceId - The device ID
+   * @param continuousDrivingSeconds - Continuous driving time in seconds
+   */
+  async cacheContinuousDrivingTime(deviceId: string, continuousDrivingSeconds: number): Promise<void> {
+    try {
+      const key = `continuous_driving:${deviceId}`;
+      // Cache for 5 minutes (since we receive updates periodically from MQTT)
+      await this.client.setEx(key, 300, continuousDrivingSeconds.toString());
+      logger.debug(`Cached continuous driving time for ${deviceId}: ${continuousDrivingSeconds}s`);
+    } catch (error) {
+      logger.error('Error caching continuous driving time:', error);
+    }
+  }
+
+  /**
+   * Get cached continuous driving time received from MQTT
+   * @param deviceId - The device ID
+   * @returns Continuous driving time in seconds or null if not found
+   */
+  async getContinuousDrivingTime(deviceId: string): Promise<number | null> {
+    try {
+      const key = `continuous_driving:${deviceId}`;
+      const value = await this.client.get(key);
+      return value ? parseInt(value, 10) : null;
+    } catch (error) {
+      logger.error('Error getting continuous driving time:', error);
+      return null;
+    }
+  }
+
+  /**
+   * Delete cached continuous driving time
+   * @param deviceId - The device ID
+   */
+  async deleteContinuousDrivingTime(deviceId: string): Promise<void> {
+    try {
+      const key = `continuous_driving:${deviceId}`;
+      await this.client.del(key);
+      logger.debug(`Deleted continuous driving time for ${deviceId}`);
+    } catch (error) {
+      logger.error('Error deleting continuous driving time:', error);
+    }
+  }
+
     /**
      * Get latest GPS data from Redis cache for a device
      */
