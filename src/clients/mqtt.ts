@@ -48,7 +48,7 @@ class MQTTService {
   // TODO: Get driverId from driver_license_number
   // For now, use hardcoded UUID
   private driverId = "880e8400-e29b-41d4-a716-446655440001";
-  private tzOffsetMinutes = 7 * 60 * 60 * 1000;
+  private tzOffsetMinutes = 0; // Changed from UTC+7 to UTC+0
 
   // Driving time tracking
   private drivingTimeTimer: NodeJS.Timeout | null = null;
@@ -485,7 +485,7 @@ class MQTTService {
       }
 
       // Build driver info payload
-      // Convert to UTC+7 milliseconds
+      // Get current timestamp in UTC+0
       const utc7Ms = Date.now() + this.tzOffsetMinutes;
 
       const driverInfo: DriverInfoPayload = {
@@ -563,7 +563,7 @@ class MQTTService {
         `Driver: ${driverInfo.driver_name} (${driverInfo.driver_license_number})`
       );
 
-      // Convert Unix milliseconds to UTC+7
+      // Convert Unix milliseconds (now using UTC+0)
       const checkInTimestampMs =
         checkInData.check_in_timestamp + this.tzOffsetMinutes;
       logger.info(
@@ -655,7 +655,7 @@ class MQTTService {
     try {
       logger.info(`Creating trip for device: ${deviceId}`);
 
-      // Convert Unix milliseconds to UTC+7
+      // Convert Unix milliseconds (now using UTC+0)
       const startTimeMs = checkInData.check_in_timestamp + this.tzOffsetMinutes;
       const startTime = new Date(startTimeMs).toISOString();
 
@@ -853,7 +853,7 @@ class MQTTService {
         deviceId
       );
 
-      // Convert to UTC+7 milliseconds
+      // Get current timestamp in UTC+0
       const utc7Ms = Date.now() + this.tzOffsetMinutes;
 
       const responsePayload: CheckOutConfirmResponsePayload = {
@@ -905,7 +905,7 @@ class MQTTService {
         `Driver: ${driverInfo.driver_name} (${driverInfo.driver_license_number})`
       );
 
-      // Convert Unix milliseconds to UTC+7
+      // Convert Unix milliseconds (now using UTC+0)
       const checkOutTimestampMs =
         checkOutData.check_out_timestamp + this.tzOffsetMinutes;
       logger.info(
@@ -1005,7 +1005,7 @@ class MQTTService {
         return latestTrip.id;
       }
 
-      // Convert Unix milliseconds to UTC+7
+      // Convert Unix milliseconds (now using UTC+0)
       const endTimeMs = checkOutData.check_out_timestamp + this.tzOffsetMinutes;
       const endTime = new Date(endTimeMs).toISOString();
 
@@ -1098,7 +1098,7 @@ class MQTTService {
         return;
       }
 
-      // Convert Unix milliseconds to UTC+7
+      // Convert Unix milliseconds (now using UTC+0)
       const timestampMs = payload.time_stamp + this.tzOffsetMinutes;
       const timestamp = new Date(timestampMs).toISOString();
 
@@ -1577,11 +1577,11 @@ class MQTTService {
         return;
       }
 
-      // Get current time in UTC+7
+      // Get current time in UTC+0
       const currentTimeMs = Date.now() + this.tzOffsetMinutes;
       const currentTime = new Date(currentTimeMs);
 
-      // Parse trip start time (already in UTC+7 format from DB)
+      // Parse trip start time (already in UTC+0 format from DB)
       const tripStartTime = new Date(latestTrip.startTime);
 
       // Calculate total driving duration in seconds
@@ -1708,7 +1708,7 @@ class MQTTService {
         return;
       }
 
-      // Convert Unix milliseconds to UTC+7
+      // Convert Unix milliseconds (now using UTC+0)
       const timestampMs = payload.time_stamp + this.tzOffsetMinutes;
       const timestamp = new Date(timestampMs).toISOString();
       const violations = payload.violation_operation;
@@ -1904,7 +1904,7 @@ class MQTTService {
         logger.info(`Latest trip data: ${JSON.stringify(latestTrip)}`);
       }
 
-      // Convert Unix milliseconds to UTC+7
+      // Convert Unix milliseconds (now using UTC+0)
       const timestampMs = payload.time_stamp + this.tzOffsetMinutes;
       const timestamp = new Date(timestampMs).toISOString();
 
@@ -1918,7 +1918,7 @@ class MQTTService {
         latitude = latestGPSData.gps_data.latitude;
         longitude = latestGPSData.gps_data.longitude;
 
-        // Use GPS timestamp from cache if available
+        // Use GPS timestamp from cache if available (UTC+0)
         if (latestGPSData.time_stamp) {
           const gpsTimestampMs = latestGPSData.time_stamp + this.tzOffsetMinutes;
           gpsTimestamp = new Date(gpsTimestampMs).toISOString();
@@ -2085,7 +2085,7 @@ class MQTTService {
         );
       }
 
-      // Convert Unix milliseconds to UTC+7
+      // Convert Unix milliseconds (now using UTC+0)
       const timestampMs = payload.time_stamp + this.tzOffsetMinutes;
       const timestamp = new Date(timestampMs).toISOString();
 
@@ -2099,7 +2099,7 @@ class MQTTService {
         latitude = latestGPSData.gps_data.latitude;
         longitude = latestGPSData.gps_data.longitude;
 
-        // Use GPS timestamp from cache if available
+        // Use GPS timestamp from cache if available (UTC+0)
         if (latestGPSData.time_stamp) {
           const gpsTimestampMs = latestGPSData.time_stamp + this.tzOffsetMinutes;
           gpsTimestamp = new Date(gpsTimestampMs).toISOString();
@@ -2274,7 +2274,7 @@ class MQTTService {
       // Get latest trip
       const latestTrip = await tripService.getLatestTrip(this.vehicleId);
 
-      // Convert Unix milliseconds to UTC+7
+      // Convert Unix milliseconds (now using UTC+0)
       const timestampMs = payload.time_stamp + this.tzOffsetMinutes;
       const timestamp = new Date(timestampMs).toISOString();
 
@@ -2327,7 +2327,7 @@ class MQTTService {
         timestamp: timestamp,
       });
 
-      // Log emergency event to EventLog with ALERT severity
+      // Log emergency event to EventLog with ALERT severity (UTC+0)
       const gpsTimestampMs = emergencyData.gps_timestamp + this.tzOffsetMinutes;
       const gpsTimestamp = new Date(gpsTimestampMs).toISOString();
       await eventLogService.logEmergencyEvent(
