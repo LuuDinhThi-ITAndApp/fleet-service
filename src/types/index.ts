@@ -105,6 +105,87 @@ export interface DriverCheckInPayload {
   message_id: string;
   check_in_data: CheckInData;
 }
+interface BiometricData {
+    id?: string;
+    organizationId: string;
+    userId: string;
+    firstName: string;
+    lastName: string;
+    dateOfBirth?: string;
+    phone: string;
+    email?: string;
+    address?: string;
+    licenseNumber: string;
+    licenseType: string;
+    licenseExpiry: string;
+    licenseIssueDate?: string;
+    employeeId?: string;
+    hireDate?: string;
+    medicalCertificateExpiry?: string;
+    lastTrainingDate?: string;
+    behaviorScore?: number;
+    totalTrips?: number;
+    totalDistanceKm?: number;
+    totalAlerts?: number;
+    status?: string;
+    photoUrl?: string;
+    notes?: string;
+    faceVector: string;
+    createdAt?: string;
+    updatedAt?: string;
+}
+
+export interface BiometricResponse {
+  description: string;
+  traceId?: string;
+  data: BiometricData[];
+}
+
+export interface BiometricAuthResponse {
+  description: string;
+  traceId?: string;
+  data: BiometricData;
+}
+
+export interface EnrollBiometricRequest {
+  organizationId: string;
+  userId: string;
+  firstName: string;
+  lastName: string;
+  dateOfBirth?: string;
+  phone: string;
+  email?: string;
+  address?: string;
+  licenseNumber: string;
+  licenseType?: string;
+  licenseExpiry: string;
+  licenseIssueDate?: string;
+  employeeId?: string;
+  hireDate?: string;
+  medicalCertificateExpiry?: string;
+  lastTrainingDate?: string;
+  behaviorScore?: number;
+  totalTrips?: number;
+  totalDistanceKm?: number;
+  totalAlerts?: number;
+  status?: string;
+  photoUrl?: string;
+  notes?: string;
+  faceVector: string;
+}
+
+export interface EnrollBiometricData {
+    time_stamp: string;
+    message_id: string;
+    driver_information: {
+      driver_name: string;
+      driver_license_number: string;
+      class: string;
+      expiry_date: string;
+      phone: string;
+    };
+    biometric: string; // JSON string of number array
+}
 
 // Driver Check-out Confirm Request Types
 export interface CheckOutConfirmRequestPayload {

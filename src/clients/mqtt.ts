@@ -19,6 +19,8 @@ import {
   OMSPayload,
   StreamingEventPayload,
   EmergencyPayload,
+  EnrollBiometricData,
+  EnrollBiometricRequest,
 } from "../types";
 import { redisClient } from "./redis";
 import { timescaleDB } from "./timescaledb";
@@ -187,6 +189,7 @@ class MQTTService {
       config.mqtt.topics.oms,
       config.mqtt.topics.streamingEvent,
       config.mqtt.topics.emergency,
+      config.mqtt.topics.biometricEnroll,
     ];
 
     topics.forEach((topic) => {
@@ -287,6 +290,9 @@ class MQTTService {
           break;
         case MqttTopic.Emergency:
           await this.handleEmergency(deviceId, message as EmergencyPayload);
+          break;
+        case MqttTopic.EnrollBiometric:
+          await this.handleEnrollBiometric(deviceId, message as EnrollBiometricData);
           break;
         default: {
           // Handle generic event
@@ -595,7 +601,7 @@ class MQTTService {
   ): Promise<void> {
     try {
       logger.info(`Received driver check-in from device: ${deviceId}`);
-
+      
       const checkInData = payload.check_in_data;
       const driverInfo = checkInData.driver_information;
       const location = checkInData.CheckInLocation;
@@ -2539,6 +2545,155 @@ class MQTTService {
     }
     this.gpsBufferTimers.clear();
     this.gpsBuffers.clear();
+  }
+
+  /**
+   * Enroll biometric data for a driver
+   * 1. Check duplicate via POST /api/face-recognition/check-duplicate
+   * 2. Create driver via POST /api/drivers
+   */
+  public async handleEnrollBiometric(deviceId: string, payload: EnrollBiometricData): Promise<void> {
+    const topic = `fms/${deviceId}/biometric/enroll_response`;
+
+    try {
+      logger.info(`Handling enroll biometric for device ${deviceId}`);
+
+      // Check for duplicate biometric (95% similarity threshold)
+      const duplicateResult = await driverService.checkDuplicateBiometric(payload.biometric, 0.95);
+      if (duplicateResult && duplicateResult.data && duplicateResult.data.length > 0) {
+        logger.warn(`Duplicate biometric found for device ${deviceId}`);
+        const response = {
+          time_stamp: Date.now(),
+          message_id: payload.message_id,
+          status: 'error',
+          message: 'Biometric already exists'
+        };
+        this.client?.publish(topic, JSON.stringify(response), { qos: 1 });
+
+        socketIOServer.emit("biometric:duplicate", {
+          device_id: deviceId,
+          message_id: payload.message_id,
+          status: 'error',
+          message: 'Biometric already exists',
+          existing_driver: duplicateResult.data[0]
+        });
+
+        socketIOServer.to(`device:${deviceId}`).emit("device:biometric:duplicate", {
+          device_id: deviceId,
+          message_id: payload.message_id,
+          status: 'error',
+          message: 'Biometric already exists',
+          existing_driver: duplicateResult.data[0]
+        });
+
+        return;
+      }
+
+      // Parse driver name
+      const driverName = payload.driver_information?.driver_name || '';
+      const nameParts = driverName.split(' ');
+      const firstName = nameParts[0] || 'Unknown';
+      const lastName = nameParts.slice(1).join(' ') || 'Driver';
+
+      // Helper function for future date
+      const getFutureDate = (yearsFromNow: number): string => {
+        const date = new Date();
+        date.setFullYear(date.getFullYear() + yearsFromNow);
+        return date.toISOString().split('T')[0];
+      };
+
+      // Build create driver request according to API spec
+      const createDriverRequest = {
+        organizationId: '550e8400-e29b-41d4-a716-446655440000',
+        firstName,
+        lastName,
+        phone: payload.driver_information?.phone || '',
+        email: `${firstName.toLowerCase()}.${lastName.toLowerCase().replace(/\s/g, '')}@example.com`,
+        licenseNumber: payload.driver_information?.driver_license_number || `DL${Date.now()}`,
+        licenseType: payload.driver_information?.class || 'B2',
+        licenseExpiry: payload.driver_information?.expiry_date || getFutureDate(5),
+        status: 'active',
+        notes: 'Enrolled via biometric system',
+        faceVector: payload.biometric
+      };
+
+      // Create driver via POST /api/drivers
+      const result = await driverService.createDriver(createDriverRequest);
+
+      if (result) {
+        logger.info(`Driver enrolled successfully: ${result.firstName} ${result.lastName} (ID: ${result.id})`);
+        const response = {
+          time_stamp: Date.now(),
+          message_id: payload.message_id,
+          status: 'success',
+          message: 'Enrollment successful',
+          driver_id: result.id
+        };
+        this.client?.publish(topic, JSON.stringify(response), { qos: 1 });
+
+        socketIOServer.emit("biometric:enrolled", {
+          device_id: deviceId,
+          message_id: payload.message_id,
+          status: 'success',
+          driver_id: result.id,
+          driver_name: `${result.firstName} ${result.lastName}`
+        });
+
+        socketIOServer.to(`device:${deviceId}`).emit("device:biometric:enrolled", {
+          device_id: deviceId,
+          message_id: payload.message_id,
+          status: 'success',
+          driver_id: result.id,
+          driver_name: `${result.firstName} ${result.lastName}`
+        });
+      } else {
+        logger.error(`Failed to create driver for device ${deviceId}`);
+        const response = {
+          time_stamp: Date.now(),
+          message_id: payload.message_id,
+          status: 'error',
+          message: 'Enrollment failed'
+        };
+        this.client?.publish(topic, JSON.stringify(response), { qos: 1 });
+
+        socketIOServer.emit("biometric:enroll:failed", {
+          device_id: deviceId,
+          message_id: payload.message_id,
+          status: 'error',
+          message: 'Enrollment failed'
+        });
+
+        socketIOServer.to(`device:${deviceId}`).emit("device:biometric:enroll:failed", {
+          device_id: deviceId,
+          message_id: payload.message_id,
+          status: 'error',
+          message: 'Enrollment failed'
+        });
+      }
+    } catch (error: any) {
+      logger.error(`Error handling enroll biometric for device ${deviceId}:`, error);
+      const response = {
+        time_stamp: Date.now(),
+        message_id: payload.message_id,
+        status: 'error',
+        message: error.message || 'Enrollment failed'
+      };
+      this.client?.publish(topic, JSON.stringify(response), { qos: 1 });
+
+      socketIOServer.emit("biometric:enroll:failed", {
+        device_id: deviceId,
+        message_id: payload.message_id,
+        status: 'error',
+        message: error.message || 'Enrollment failed'
+      });
+
+      socketIOServer.to(`device:${deviceId}`).emit("device:biometric:enroll:failed", {
+        device_id: deviceId,
+        message_id: payload.message_id,
+        status: 'error',
+        message: error.message || 'Enrollment failed'
+      });
+    }
   }
 }
 

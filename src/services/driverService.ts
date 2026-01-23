@@ -2,19 +2,54 @@ import axios, { AxiosInstance } from 'axios';
 import { config } from '../config';
 import { logger } from '../utils/logger';
 
+interface DriverData {
+  id: string;
+  firstName: string;
+  lastName: string;
+  licenseNumber: string;
+  licenseType: string;
+  phone: string;
+  email: string;
+  status: string;
+}
+
 interface DriverResponse {
   description: string;
   traceId?: string;
-  data: {
-    id: string;
-    firstName: string;
-    lastName: string;
-    licenseNumber: string;
-    licenseType: string;
-    phone: string;
-    email: string;
-    status: string;
-  };
+  data: DriverData;
+}
+
+interface CreateDriverRequest {
+  organizationId?: string;
+  firstName: string;
+  lastName: string;
+  phone: string;
+  email?: string;
+  address?: string;
+  licenseNumber: string;
+  licenseType?: string;
+  licenseExpiry: string;
+  licenseIssueDate?: string;
+  employeeId?: string;
+  hireDate?: string;
+  medicalCertificateExpiry?: string;
+  lastTrainingDate?: string;
+  behaviorScore?: number;
+  status?: string;
+  photoUrl?: string;
+  notes?: string;
+  faceVector?: string;
+}
+
+interface CheckDuplicateRequest {
+  faceVector: string;
+  threshold: number;
+}
+
+interface CheckDuplicateResponse {
+  description: string;
+  traceId?: string;
+  data: DriverData[];
 }
 
 class DriverService {
@@ -82,6 +117,45 @@ class DriverService {
     ];
 
     return mockDrivers[index % mockDrivers.length];
+  }
+
+  /**
+   * Check for duplicate biometric (face vector)
+   * POST /api/face-recognition/check-duplicate
+   */
+  async checkDuplicateBiometric(faceVector: string, threshold: number = 0.95): Promise<CheckDuplicateResponse | null> {
+    try {
+      const response = await this.client.post<CheckDuplicateResponse>('/api/face-recognition/check-duplicate', {
+        faceVector,
+        threshold
+      });
+
+      logger.info(`Check duplicate biometric completed, found ${response.data.data?.length || 0} matches`);
+      return response.data;
+    } catch (error: any) {
+      logger.error('Error checking duplicate biometric:', error.message);
+      return null;
+    }
+  }
+
+  /**
+   * Create a new driver
+   * POST /api/drivers
+   */
+  async createDriver(driverData: CreateDriverRequest): Promise<DriverData | null> {
+    try {
+      const response = await this.client.post<DriverResponse>('/api/drivers', driverData);
+
+      if (response.data && response.data.data) {
+        logger.info(`Driver created successfully: ${response.data.data.id}`);
+        return response.data.data;
+      }
+
+      return null;
+    } catch (error: any) {
+      logger.error('Error creating driver:', error.message);
+      throw error;
+    }
   }
 }
 

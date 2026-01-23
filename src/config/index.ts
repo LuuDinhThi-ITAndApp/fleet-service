@@ -21,6 +21,7 @@ export const config = {
       oms: process.env.MQTT_TOPIC_OMS || 'fms/+/OMS',
       streamingEvent: process.env.MQTT_TOPIC_STREAMMING_EVENT || 'fms/+/driving_session/streamming_event',
       emergency: process.env.MQTT_TOPIC_EMERGENCY || 'fms/+/emergency',
+      biometricEnroll: process.env.MQTT_TOPIC_BIOMETRIC_ENROLL || 'fms/+/driving_session/driver_enrollment',
     },
     clientId: `mqtt_service_${Math.random().toString(16).slice(3)}`,
   },
