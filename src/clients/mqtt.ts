@@ -45,9 +45,8 @@ class MQTTService {
   // For now, use deviceId as vehicleId
   private vehicleId = "770e8400-e29b-41d4-a716-446655440002";
 
-  // TODO: Get driverId from driver_license_number
-  // For now, use hardcoded UUID
-  private driverId = "880e8400-e29b-41d4-a716-446655440001";
+  // Driver ID - will be set after successful face authentication
+  private driverId: string = "";
   private tzOffsetMinutes = 0; // Changed from UTC+7 to UTC+0
 
   // Driving time tracking
@@ -450,46 +449,88 @@ class MQTTService {
   ): Promise<void> {
     try {
       logger.info(`Received driver request from device: ${deviceId}`);
-      logger.info(`Driver ID: ${payload.driver_id}`);
+      logger.info(`Face vector received (length: ${payload.driver_id?.length || 0} chars)`);
 
-      // Validate driver_id
+      // Validate face vector
       if (!payload.driver_id || payload.driver_id === "None") {
-        logger.error("Invalid driver request: driver_id is missing or None");
+        logger.error("Invalid driver request: face vector is missing or None");
         return;
       }
 
-      // HARD CODED: Always use fixed driver ID regardless of input
-      logger.info(
-        `HARD CODED: Using fixed driver_id: ${this.driverId} (received: ${payload.driver_id})`
+      // Authenticate via face recognition API
+      logger.info(`Authenticating driver via face recognition API...`);
+      
+      const authResponse = await axios.post(
+        `${config.api.baseUrl}/api/face-recognition/authenticate`,
+        {
+          faceVector: payload.driver_id,
+          threshold: 0.85
+        }
       );
 
-      // Get driver info from API using FIXED driver_id
-      let driverData;
+      // Check if response contains error (API returns 200 even on failure)
+      if (authResponse.data.errorType) {
+        logger.warn(`Face authentication failed for device: ${deviceId}`);
+        logger.warn(`Error: ${authResponse.data.description} (${authResponse.data.responseCode})`);
+        
+        // Publish driver info with "None" values to indicate authentication failure
+        const utcMs = Date.now() + this.tzOffsetMinutes;
+        const failureDriverInfo: DriverInfoPayload = {
+          time_stamp: utcMs,
+          message_id: payload.message_id,
+          driver_information: {
+            driver_name: "None",
+            driver_license_number: "None"
+          }
+        };
+        
+        await this.publishDriverInfo(deviceId, failureDriverInfo);
+        
+        // Stream to Socket.IO for monitoring
+        socketIOServer.emit("driver:request", {
+          device_id: deviceId,
+          driver_id: "None",
+          message_id: payload.message_id,
+          time_stamp: payload.time_stamp,
+        });
 
-      try {
-        logger.info(
-          `Fetching driver info from API for driver_id: ${this.driverId}`
-        );
-        driverData = await driverService.getDriverById(this.driverId);
-
-        // Fallback to mock data if API fails or driver not found
-        if (!driverData) {
-          logger.warn(
-            `Driver ${this.driverId} not found in API, using mock data`
-          );
-          driverData = driverService.getMockDriverInfo(0);
-        }
-      } catch (error) {
-        logger.error("Error fetching driver from API, using mock data:", error);
-        driverData = driverService.getMockDriverInfo(0);
+        socketIOServer.emit("driver:info", {
+          device_id: deviceId,
+          ...failureDriverInfo,
+        });
+        
+        return;
       }
 
+      // Success case - response has data field
+      if (!authResponse.data || !authResponse.data.data) {
+        logger.error("Invalid response from face authentication API: missing data field");
+        
+        // Publish driver info with "None" values
+        const utcMs = Date.now() + this.tzOffsetMinutes;
+        const failureDriverInfo: DriverInfoPayload = {
+          time_stamp: utcMs,
+          message_id: payload.message_id,
+          driver_information: {
+            driver_name: "None",
+            driver_license_number: "None"
+          }
+        };
+        
+        await this.publishDriverInfo(deviceId, failureDriverInfo);
+        return;
+      }
+
+      const driverData = authResponse.data.data;
+      this.driverId = driverData.id; // Store authenticated driver ID
+      
+      logger.info(`Face authentication successful for driver: ${driverData.firstName} ${driverData.lastName} (ID: ${driverData.id})`);
+
       // Build driver info payload
-      // Get current timestamp in UTC+0
-      const utc7Ms = Date.now() + this.tzOffsetMinutes;
+      const utcMs = Date.now() + this.tzOffsetMinutes;
 
       const driverInfo: DriverInfoPayload = {
-        time_stamp: utc7Ms,
+        time_stamp: utcMs,
         message_id: payload.message_id,
         driver_information: {
           driver_name: `${driverData.firstName} ${driverData.lastName}`,
@@ -503,7 +544,7 @@ class MQTTService {
       // Stream to Socket.IO for monitoring
       socketIOServer.emit("driver:request", {
         device_id: deviceId,
-        driver_id: payload.driver_id,
+        driver_id: driverData.id,
         message_id: payload.message_id,
         time_stamp: payload.time_stamp,
       });
