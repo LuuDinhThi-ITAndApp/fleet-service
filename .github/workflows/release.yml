@@ -8,7 +8,7 @@ on:
 jobs:
   create-release:
     name: Create GitHub Release
-    runs-on: fleet-service
+    runs-on: ubuntu-latest
     permissions:
       contents: write
     
@@ -67,7 +67,7 @@ jobs:
   trigger-publish:
     name: Trigger Docker Publish
     needs: create-release
-    runs-on: fleet-service
+    runs-on: ubuntu-latest
     
     steps:
       - name: Trigger publish workflow
