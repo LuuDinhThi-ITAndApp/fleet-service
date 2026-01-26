@@ -455,10 +455,11 @@ class MQTTService {
   ): Promise<void> {
     try {
       logger.info(`Received driver request from device: ${deviceId}`);
-      logger.info(`Face vector received (length: ${payload.driver_id?.length || 0} chars)`);
+      logger.info(`Face vector received (length: ${payload.biometric?.length || 0} chars)`);
+      console.info(`Face vector: ${payload.biometric}`);
 
       // Validate face vector
-      if (!payload.driver_id || payload.driver_id === "None") {
+      if (!payload.biometric || payload.biometric === "None") {
         logger.error("Invalid driver request: face vector is missing or None");
         return;
       }
@@ -469,7 +470,7 @@ class MQTTService {
       const authResponse = await axios.post(
         `${config.api.baseUrl}/api/face-recognition/authenticate`,
         {
-          faceVector: payload.driver_id,
+          faceVector: payload.biometric,
           threshold: 0.85
         }
       );
@@ -2559,7 +2560,7 @@ class MQTTService {
       logger.info(`Handling enroll biometric for device ${deviceId}`);
 
       // Check for duplicate biometric (95% similarity threshold)
-      const duplicateResult = await driverService.checkDuplicateBiometric(payload.biometric, 0.95);
+      const duplicateResult = await driverService.checkDuplicateBiometric(payload.biometric, 0.1);
       if (duplicateResult && duplicateResult.data && duplicateResult.data.length > 0) {
         logger.warn(`Duplicate biometric found for device ${deviceId}`);
         const response = {
@@ -2589,11 +2590,19 @@ class MQTTService {
         return;
       }
 
-      // Parse driver name
-      const driverName = payload.driver_information?.driver_name || '';
-      const nameParts = driverName.split(' ');
-      const firstName = nameParts[0] || 'Unknown';
-      const lastName = nameParts.slice(1).join(' ') || 'Driver';
+      let driverInfoData = payload.driver_information;
+      if (typeof driverInfoData === 'string') {
+        try {
+          driverInfoData = JSON.parse(driverInfoData);
+        } catch (e) {
+          logger.warn("driver_information là string nhưng không thể parse JSON, thử dùng trực tiếp.");
+        }
+      }
+        // Parse driver name
+      const driverName = driverInfoData?.driver_name;
+      const nameParts = driverName?.split(' ');
+      const firstName = nameParts[0];
+      const lastName = nameParts.slice(1).join(' ');
 
       // Helper function for future date
       const getFutureDate = (yearsFromNow: number): string => {
@@ -2602,16 +2611,23 @@ class MQTTService {
         return date.toISOString().split('T')[0];
       };
 
+      // Helper function to generate random phone number
+      const generateRandomPhone = (): string => {
+        const prefixes = ['090', '091', '092', '093', '094', '095', '096', '097', '098', '099'];
+        const prefix = prefixes[Math.floor(Math.random() * prefixes.length)];
+        const suffix = Math.floor(Math.random() * 10000000).toString().padStart(7, '0');
+        return `${prefix}${suffix}`;
+      };
+
       // Build create driver request according to API spec
       const createDriverRequest = {
-        organizationId: '550e8400-e29b-41d4-a716-446655440000',
         firstName,
         lastName,
-        phone: payload.driver_information?.phone || '',
+        phone: driverInfoData.phone || generateRandomPhone(),
         email: `${firstName.toLowerCase()}.${lastName.toLowerCase().replace(/\s/g, '')}@example.com`,
-        licenseNumber: payload.driver_information?.driver_license_number || `DL${Date.now()}`,
-        licenseType: payload.driver_information?.class || 'B2',
-        licenseExpiry: payload.driver_information?.expiry_date || getFutureDate(5),
+        licenseNumber: driverInfoData?.driver_license_number || `DL${Date.now()}`,
+        licenseType: driverInfoData?.class || 'B2',
+        licenseExpiry: driverInfoData?.expiry_date || getFutureDate(5),
         status: 'active',
         notes: 'Enrolled via biometric system',
         faceVector: payload.biometric

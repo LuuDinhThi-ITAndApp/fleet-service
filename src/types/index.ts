@@ -68,7 +68,7 @@ export interface GPSDataRow {
 export interface DriverRequestPayload {
   time_stamp: number;
   message_id: string;
-  driver_id: string;
+  biometric: string;
 }
 
 // Driver Info Types
