@@ -2623,7 +2623,7 @@ class MQTTService {
       const createDriverRequest = {
         firstName,
         lastName,
-        phone: driverInfoData.phone || generateRandomPhone(),
+        phone: generateRandomPhone(),
         email: `${firstName.toLowerCase()}.${lastName.toLowerCase().replace(/\s/g, '')}@example.com`,
         licenseNumber: driverInfoData?.driver_license_number || `DL${Date.now()}`,
         licenseType: driverInfoData?.class || 'B2',
