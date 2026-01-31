@@ -12,5 +12,6 @@ export enum MqttTopic {
   OMS = "/OMS",
   StreamingEvent = "driving_session/streamming_event",
   Emergency = "/emergency",
+  AuthDeviceReq = 'driving_session/auth_device_req',
   EnrollBiometric = "driving_session/driver_enrollment",
 }

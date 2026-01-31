@@ -68,7 +68,11 @@ export interface GPSDataRow {
 export interface DriverRequestPayload {
   time_stamp: number;
   message_id: string;
-  biometric: string;
+  biometric: {
+    data: string;
+    IV: string;
+    TAG: string;
+  }
 }
 
 // Driver Info Types
@@ -89,6 +93,40 @@ export interface CheckInLocation {
   latitude: number;
   longitude: number;
   accuracy: number;
+}
+
+// topic: fms/+/driving_session/auth_device_req
+export interface AuthDeviceRequest {
+  device_id: string;
+  message_id: string
+  time_stamp: number;
+}
+
+// topic: fms/+/driving_session/auth_device_res
+export interface AuthDeviceResponse {
+  status: string;
+  time_stamp: string;
+  token_expiry: string;
+  token: string;
+}
+
+// topic: fms/+/driving_session/driver_enrollment
+export interface EnrollBiometricData {
+  time_stamp: string;
+  message_id: string;
+  driver_information?: {
+    driver_name: string;
+    driver_license_number: string;
+    class: string;
+    expiry_date: string;
+    phone: string;
+  }
+  biometric: {
+    IV: string;
+    TAG: string;
+    data: string;
+  },
+  token?: string
 }
 
 export interface CheckInData {
@@ -172,19 +210,6 @@ export interface EnrollBiometricRequest {
   photoUrl?: string;
   notes?: string;
   faceVector: string;
-}
-
-export interface EnrollBiometricData {
-    time_stamp: string;
-    message_id: string;
-    driver_information: {
-      driver_name: string;
-      driver_license_number: string;
-      class: string;
-      expiry_date: string;
-      phone: string;
-    };
-    biometric: string; // JSON string of number array
 }
 
 // Driver Check-out Confirm Request Types

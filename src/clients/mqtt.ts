@@ -20,7 +20,7 @@ import {
   StreamingEventPayload,
   EmergencyPayload,
   EnrollBiometricData,
-  EnrollBiometricRequest,
+  AuthDeviceRequest,
 } from "../types";
 import { redisClient } from "./redis";
 import { timescaleDB } from "./timescaledb";
@@ -31,6 +31,7 @@ import { tripService } from "../services/tripService";
 import { eventLogService } from "../services/eventLogService";
 import { CacheKeys, VehicleState } from "../utils/constants";
 import { MqttTopic } from "../types/enum";
+import { securityService } from "../services/securityService";
 
 class MQTTService {
   private client: MqttClient | null = null;
@@ -126,6 +127,8 @@ class MQTTService {
   connect(): void {
     logger.info(`Connecting to MQTT broker: ${config.mqtt.brokerUrl}`);
 
+    securityService.initialize();
+
     this.client = mqtt.connect(config.mqtt.brokerUrl, {
       clientId: config.mqtt.clientId,
       username: config.mqtt.username,
@@ -190,6 +193,7 @@ class MQTTService {
       config.mqtt.topics.streamingEvent,
       config.mqtt.topics.emergency,
       config.mqtt.topics.biometricEnroll,
+      config.mqtt.topics.authDeviceReq,
     ];
 
     topics.forEach((topic) => {
@@ -290,6 +294,9 @@ class MQTTService {
           break;
         case MqttTopic.Emergency:
           await this.handleEmergency(deviceId, message as EmergencyPayload);
+          break;
+        case MqttTopic.AuthDeviceReq:
+          this.handleAuthDeviceRequest(deviceId, message as AuthDeviceRequest)
           break;
         case MqttTopic.EnrollBiometric:
           await this.handleEnrollBiometric(deviceId, message as EnrollBiometricData);
@@ -455,12 +462,11 @@ class MQTTService {
   ): Promise<void> {
     try {
       logger.info(`Received driver request from device: ${deviceId}`);
-      logger.info(`Face vector received (length: ${payload.biometric?.length || 0} chars)`);
-      console.info(`Face vector: ${payload.biometric}`);
+      const decrypted = securityService.decrypt(payload)
 
       // Validate face vector
-      if (!payload.biometric || payload.biometric === "None") {
-        logger.error("Invalid driver request: face vector is missing or None");
+      if (!decrypted) {
+        logger.error("Invalid driver request: face vector is missing");
         return;
       }
 
@@ -470,8 +476,8 @@ class MQTTService {
       const authResponse = await axios.post(
         `${config.api.baseUrl}/api/face-recognition/authenticate`,
         {
-          faceVector: payload.biometric,
-          threshold: 0.85
+          faceVector: JSON.stringify(decrypted),
+          threshold: 0.3
         }
       );
 
@@ -606,6 +612,7 @@ class MQTTService {
       const checkInData = payload.check_in_data;
       const driverInfo = checkInData.driver_information;
       const location = checkInData.CheckInLocation;
+      const driver = await driverService.getDriverById(this.driverId);
 
       logger.info(
         `Driver: ${driverInfo.driver_name} (${driverInfo.driver_license_number})`
@@ -668,6 +675,8 @@ class MQTTService {
         device_id: deviceId,
         driver_name: driverInfo.driver_name,
         driver_license: driverInfo.driver_license_number,
+        driver_license_type: driver?.licenseType,
+        driver_license_expiry: driver?.licenseExpiry,
         check_in_timestamp: checkInData.check_in_timestamp,
         location: {
           latitude: location.latitude,
@@ -2548,19 +2557,83 @@ class MQTTService {
     this.gpsBuffers.clear();
   }
 
+  public handleAuthDeviceRequest(deviceId: string, payload: AuthDeviceRequest): void {
+    logger.info(`Authenticating device: ${deviceId}`);
+
+    const token = securityService.generateToken(payload.device_id);
+    const topic = `fms/${deviceId}/driving_session/auth_device_res`;
+
+    const res = {
+      status: 'success',
+      message_id: payload.message_id,
+      time_stamp: Date.now(),
+      token_expiry: Date.now() + 3 * 60 * 60 * 1000,
+      token: token
+    }
+
+    console.log("Auth response:", res);
+
+    this.client?.publish(topic, JSON.stringify(res), { qos: 0 }, (err) => {
+      if (err) {
+        logger.error(`Failed to publish auth response to ${topic}:`, err);
+      } else {
+        logger.info(`Published auth response to ${topic}`);
+      }
+    });
+  }
+
   /**
    * Enroll biometric data for a driver
    * 1. Check duplicate via POST /api/face-recognition/check-duplicate
    * 2. Create driver via POST /api/drivers
    */
-  public async handleEnrollBiometric(deviceId: string, payload: EnrollBiometricData): Promise<void> {
+  public async handleEnrollBiometric(deviceId: string, payload: EnrollBiometricData ): Promise<void> {
     const topic = `fms/${deviceId}/biometric/enroll_response`;
+    const decrypted = securityService.decrypt(payload);
+
+    if (!decrypted) {
+      logger.warn(`⚠️ Decryption failed for device ${deviceId} during biometric enrollment`);
+      const response = {
+        time_stamp: Date.now(),
+        message_id: payload.message_id,
+        status: 'failure',
+        message: 'Enrollment failed due to decryption error',
+      };
+      this.client?.publish(topic, JSON.stringify(response), { qos: 0 });
+      return;
+    }
+
+    if (!payload.token) {
+      logger.warn(`⚠️ Unauthorized: Device ${deviceId} sent no JWT token`);
+      const response = {
+        time_stamp: Date.now(),
+        message_id: payload.message_id,
+        status: 'failure',
+        message: 'Enrollment failed due to missing token',
+      };
+      this.client?.publish(topic, JSON.stringify(response), { qos: 0 });
+      return;
+    }
+
+    const decoded = securityService.verifyToken(payload.token);
+
+    if (!decoded || decoded.deviceId !== deviceId) {
+      logger.warn(`⚠️ Unauthorized: Device ${deviceId} sent invalid JWT`);
+       const response = {
+          time_stamp: Date.now(),
+          message_id: payload.message_id,
+          status: 'failure',
+          message: 'Enrollment failed due to invalid token',
+        };
+        this.client?.publish(topic, JSON.stringify(response), { qos: 0 });
+        return;
+    }
 
     try {
       logger.info(`Handling enroll biometric for device ${deviceId}`);
 
       // Check for duplicate biometric (95% similarity threshold)
-      const duplicateResult = await driverService.checkDuplicateBiometric(payload.biometric, 0.1);
+      const duplicateResult = await driverService.checkDuplicateBiometric(JSON.stringify(decrypted), 0.1);
       if (duplicateResult && duplicateResult.data && duplicateResult.data.length > 0) {
         logger.warn(`Duplicate biometric found for device ${deviceId}`);
         const response = {
@@ -2569,7 +2642,7 @@ class MQTTService {
           status: 'error',
           message: 'Biometric already exists'
         };
-        this.client?.publish(topic, JSON.stringify(response), { qos: 1 });
+        this.client?.publish(topic, JSON.stringify(response), { qos: 0 });
 
         socketIOServer.emit("biometric:duplicate", {
           device_id: deviceId,
@@ -2601,8 +2674,8 @@ class MQTTService {
         // Parse driver name
       const driverName = driverInfoData?.driver_name;
       const nameParts = driverName?.split(' ');
-      const firstName = nameParts[0];
-      const lastName = nameParts.slice(1).join(' ');
+      const firstName = nameParts?.[0] || 'Driver';
+      const lastName = nameParts?.slice(1).join(' ') || 'Unnamed';
 
       // Helper function for future date
       const getFutureDate = (yearsFromNow: number): string => {
@@ -2624,13 +2697,13 @@ class MQTTService {
         firstName,
         lastName,
         phone: generateRandomPhone(),
-        email: `${firstName.toLowerCase()}.${lastName.toLowerCase().replace(/\s/g, '')}@example.com`,
+        email: `${firstName?.toLowerCase()}.${lastName?.toLowerCase().replace(/\s/g, '')}@example.com`,
         licenseNumber: driverInfoData?.driver_license_number || `DL${Date.now()}`,
         licenseType: driverInfoData?.class || 'B2',
         licenseExpiry: driverInfoData?.expiry_date || getFutureDate(5),
         status: 'active',
         notes: 'Enrolled via biometric system',
-        faceVector: payload.biometric
+        faceVector: JSON.stringify(decrypted)
       };
 
       // Create driver via POST /api/drivers
@@ -2643,9 +2716,8 @@ class MQTTService {
           message_id: payload.message_id,
           status: 'success',
           message: 'Enrollment successful',
-          driver_id: result.id
         };
-        this.client?.publish(topic, JSON.stringify(response), { qos: 1 });
+        this.client?.publish(topic, JSON.stringify(response), { qos: 0 });
 
         socketIOServer.emit("biometric:enrolled", {
           device_id: deviceId,
@@ -2670,7 +2742,7 @@ class MQTTService {
           status: 'error',
           message: 'Enrollment failed'
         };
-        this.client?.publish(topic, JSON.stringify(response), { qos: 1 });
+        this.client?.publish(topic, JSON.stringify(response), { qos: 0 });
 
         socketIOServer.emit("biometric:enroll:failed", {
           device_id: deviceId,
@@ -2694,7 +2766,7 @@ class MQTTService {
         status: 'error',
         message: error.message || 'Enrollment failed'
       };
-      this.client?.publish(topic, JSON.stringify(response), { qos: 1 });
+      this.client?.publish(topic, JSON.stringify(response), { qos: 0 });
 
       socketIOServer.emit("biometric:enroll:failed", {
         device_id: deviceId,

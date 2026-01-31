@@ -8,6 +8,7 @@ interface DriverData {
   lastName: string;
   licenseNumber: string;
   licenseType: string;
+  licenseExpiry: string;
   phone: string;
   email: string;
   status: string;
@@ -92,32 +93,32 @@ class DriverService {
   /**
    * Get mock driver info for testing with predefined UUIDs
    */
-  getMockDriverInfo(index: number = 0): DriverResponse['data'] {
-    const mockDrivers = [
-      {
-        id: '880e8400-e29b-41d4-a716-446655440001',
-        firstName: 'Nguyen',
-        lastName: 'Van A',
-        licenseNumber: 'B2-123456789',
-        licenseType: 'B2',
-        phone: '+84123456789',
-        email: 'nguyenvana@example.com',
-        status: 'active',
-      },
-      {
-        id: '880e8400-e29b-41d4-a716-446655440002',
-        firstName: 'Tran',
-        lastName: 'Thi B',
-        licenseNumber: 'C-987654321',
-        licenseType: 'C',
-        phone: '+84987654321',
-        email: 'tranthib@example.com',
-        status: 'active',
-      },
-    ];
+  // getMockDriverInfo(index: number = 0): DriverResponse['data'] {
+  //   const mockDrivers = [
+  //     {
+  //       id: '880e8400-e29b-41d4-a716-446655440001',
+  //       firstName: 'Nguyen',
+  //       lastName: 'Van A',
+  //       licenseNumber: 'B2-123456789',
+  //       licenseType: 'B2',
+  //       phone: '+84123456789',
+  //       email: 'nguyenvana@example.com',
+  //       status: 'active',
+  //     },
+  //     {
+  //       id: '880e8400-e29b-41d4-a716-446655440002',
+  //       firstName: 'Tran',
+  //       lastName: 'Thi B',
+  //       licenseNumber: 'C-987654321',
+  //       licenseType: 'C',
+  //       phone: '+84987654321',
+  //       email: 'tranthib@example.com',
+  //       status: 'active',
+  //     },
+  //   ];
 
-    return mockDrivers[index % mockDrivers.length];
-  }
+  //   return mockDrivers[index % mockDrivers.length];
+  // }
 
   /**
    * Check for duplicate biometric (face vector)
