@@ -1,7 +1,7 @@
 import crypto from 'crypto';
 import jwt from 'jsonwebtoken'
 import { logger } from '../utils/logger';
-import { EnrollBiometricData } from '../types';
+import { EnrollBiometricData, IEncryptBase } from '../types';
 
 class SecurityService {
   private aesKey: Buffer | null = null;
@@ -48,7 +48,7 @@ class SecurityService {
   /**
    * Encrypt payload using AES-256-GCM
    */
-  encrypt(payload: any): any {
+  encrypt(payload: any): IEncryptBase {
     try {
       if (!this.aesKey) {
         throw new Error('Security service not initialized');
@@ -64,7 +64,7 @@ class SecurityService {
       const tag = cipher.getAuthTag();
 
        return {
-        encrypted,
+        data: encrypted,
         IV: iv.toString('hex'),
         TAG: tag.toString('hex'),
       };
@@ -112,26 +112,16 @@ class SecurityService {
   /**
    * Decrypt payload using AES-256-GCM
    */
-  decrypt(encrypted: any ): any {
+  decrypt<T>(encrypted: IEncryptBase): T {
     try {
       if (!this.aesKey) {
         throw new Error('Server security not initialized');
       }
-
-      const { time_stamp, biometric } = encrypted;
-
-      // Validate timestamp to prevent replay attacks (5 minute window)
-      const now = Date.now();
-      if (Math.abs(now - Number(time_stamp)) > 300000) {
-        throw new Error('Payload expired (timestamp mismatch)');
-      }
-
-      logger.debug('Timestamp validated');
       
       // Extract IV, auth tag, and ciphertext
-      const iv = Buffer.from(biometric.IV, 'hex');
-      const tag = Buffer.from(biometric.TAG, 'hex');
-      const ciphertext = Buffer.from(biometric.data, 'hex');
+      const iv = Buffer.from(encrypted.IV, 'hex');
+      const tag = Buffer.from(encrypted.TAG, 'hex');
+      const ciphertext = Buffer.from(encrypted.data, 'hex');
 
       // Decrypt payload using AES-256-GCM
       const decipher = crypto.createDecipheriv(
@@ -147,18 +137,11 @@ class SecurityService {
 
       logger.debug('✅ AES decryption completed successfully');
 
-      // Parse result as JSON or plain text
+      // Parse result as JSON
       const decryptedStr = decrypted.toString('utf8');
-      let result: any;
-      
-      try {
-        result = JSON.parse(decryptedStr);
-        logger.info('✅ Payload parsed as JSON');
-        logger.debug('Decrypted JSON keys:', Object.keys(result));
-      } catch (jsonError) {
-        logger.info('✅ Payload is plain text (not JSON)');
-        result = decryptedStr;
-      }
+      const result: T = JSON.parse(decryptedStr);
+
+      logger.info('✅ Payload parsed as JSON');
 
       return result;
     } catch (error: any) {

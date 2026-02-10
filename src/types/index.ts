@@ -95,6 +95,12 @@ export interface CheckInLocation {
   accuracy: number;
 }
 
+export interface IEncryptBase {
+  data: string;
+  IV: string;
+  TAG: string;
+}
+
 // topic: fms/+/driving_session/auth_device_req
 export interface AuthDeviceRequest {
   device_id: string;
@@ -121,12 +127,8 @@ export interface EnrollBiometricData {
     expiry_date: string;
     phone: string;
   }
-  biometric: {
-    IV: string;
-    TAG: string;
-    data: string;
-  },
-  token?: string
+  biometric: string;
+  token?: string;
 }
 
 export interface CheckInData {
