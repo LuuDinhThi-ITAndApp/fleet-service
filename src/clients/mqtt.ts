@@ -2589,16 +2589,16 @@ class MQTTService {
    * 1. Check duplicate via POST /api/face-recognition/check-duplicate
    * 2. Create driver via POST /api/drivers
    */
-  public async handleEnrollBiometric(deviceId: string, payload: any ): Promise<void> {
+  public async handleEnrollBiometric(deviceId: string, payload: IEncryptBase): Promise<void> {
     const topic = `fms/${deviceId}/biometric/enroll_response`;
-    const biometric = payload.biometric as IEncryptBase;
-    const decrypted = securityService.decrypt<EnrollBiometricData>(biometric);
+    const decrypted = securityService.decrypt<EnrollBiometricData>(payload);
+    console.info("Decrypted biometric enrollment data:", decrypted);
 
     if (!decrypted) {
       logger.warn(`⚠️ Decryption failed for device ${deviceId} during biometric enrollment`);
       const response = {
         time_stamp: Date.now(),
-        message_id: payload.message_id || 'unknown',
+        message_id: 'unknown',
         status: 'failure',
         message: 'Enrollment failed due to decryption error',
       };
@@ -2606,7 +2606,7 @@ class MQTTService {
       return;
     }
 
-    if (!payload.token) {
+    if (!decrypted.token) {
       logger.warn(`⚠️ Unauthorized: Device ${deviceId} sent no JWT token`);
       const response = {
         time_stamp: Date.now(),
@@ -2618,13 +2618,13 @@ class MQTTService {
       return;
     }
 
-    const decoded = securityService.verifyToken(payload.token);
+    const decoded = securityService.verifyToken(decrypted.token);
 
     if (!decoded || decoded.deviceId !== deviceId) {
       logger.warn(`⚠️ Unauthorized: Device ${deviceId} sent invalid JWT`);
        const response = {
           time_stamp: Date.now(),
-          message_id: payload.data.message_id,
+          message_id: decrypted.message_id,
           status: 'failure',
           message: 'Enrollment failed due to invalid token',
         };
@@ -2636,12 +2636,12 @@ class MQTTService {
       logger.info(`Handling enroll biometric for device ${deviceId}`);
 
       // Check for duplicate biometric (95% similarity threshold)
-      const duplicateResult = await driverService.checkDuplicateBiometric(JSON.stringify(decrypted), 0.1);
+      const duplicateResult = await driverService.checkDuplicateBiometric(decrypted.biometric, 0.1);
       if (duplicateResult && duplicateResult.data && duplicateResult.data.length > 0) {
         logger.warn(`Duplicate biometric found for device ${deviceId}`);
         const response = {
           time_stamp: Date.now(),
-          message_id: payload.data.message_id,
+          message_id: decrypted.message_id,
           status: 'error',
           message: 'Biometric already exists'
         };
@@ -2649,7 +2649,7 @@ class MQTTService {
 
         socketIOServer.emit("biometric:duplicate", {
           device_id: deviceId,
-          message_id: payload.data.message_id,
+          message_id: decrypted.message_id,
           status: 'error',
           message: 'Biometric already exists',
           existing_driver: duplicateResult.data[0]
@@ -2657,7 +2657,7 @@ class MQTTService {
 
         socketIOServer.to(`device:${deviceId}`).emit("device:biometric:duplicate", {
           device_id: deviceId,
-          message_id: payload.data.message_id,
+          message_id: decrypted.message_id,
           status: 'error',
           message: 'Biometric already exists',
           existing_driver: duplicateResult.data[0]
@@ -2666,7 +2666,7 @@ class MQTTService {
         return;
       }
 
-      let driverInfoData = payload.data.driver_information;
+      let driverInfoData = decrypted.driver_information;
       if (typeof driverInfoData === 'string') {
         try {
           driverInfoData = JSON.parse(driverInfoData);
@@ -2706,7 +2706,7 @@ class MQTTService {
         licenseExpiry: driverInfoData?.expiry_date || getFutureDate(5),
         status: 'active',
         notes: 'Enrolled via biometric system',
-        faceVector: JSON.stringify(decrypted)
+        faceVector: decrypted.biometric
       };
 
       // Create driver via POST /api/drivers
@@ -2716,7 +2716,7 @@ class MQTTService {
         logger.info(`Driver enrolled successfully: ${result.firstName} ${result.lastName} (ID: ${result.id})`);
         const response = {
           time_stamp: Date.now(),
-          message_id: payload.data.message_id,
+          message_id: decrypted.message_id,
           status: 'success',
           message: 'Enrollment successful',
         };
@@ -2724,7 +2724,7 @@ class MQTTService {
 
         socketIOServer.emit("biometric:enrolled", {
           device_id: deviceId,
-          message_id: payload.data.message_id,
+          message_id: decrypted.message_id,
           status: 'success',
           driver_id: result.id,
           driver_name: `${result.firstName} ${result.lastName}`
@@ -2732,7 +2732,7 @@ class MQTTService {
 
         socketIOServer.to(`device:${deviceId}`).emit("device:biometric:enrolled", {
           device_id: deviceId,
-          message_id: payload.data.message_id,
+          message_id: decrypted.message_id,
           status: 'success',
           driver_id: result.id,
           driver_name: `${result.firstName} ${result.lastName}`
@@ -2741,7 +2741,7 @@ class MQTTService {
         logger.error(`Failed to create driver for device ${deviceId}`);
         const response = {
           time_stamp: Date.now(),
-          message_id: payload.data.message_id,
+          message_id: decrypted.message_id,
           status: 'error',
           message: 'Enrollment failed'
         };
@@ -2749,14 +2749,14 @@ class MQTTService {
 
         socketIOServer.emit("biometric:enroll:failed", {
           device_id: deviceId,
-          message_id: payload.data.message_id,
+          message_id: decrypted.message_id,
           status: 'error',
           message: 'Enrollment failed'
         });
 
         socketIOServer.to(`device:${deviceId}`).emit("device:biometric:enroll:failed", {
           device_id: deviceId,
-          message_id: payload.data.message_id,
+          message_id: decrypted.message_id,
           status: 'error',
           message: 'Enrollment failed'
         });
@@ -2765,7 +2765,7 @@ class MQTTService {
       logger.error(`Error handling enroll biometric for device ${deviceId}:`, error);
       const response = {
         time_stamp: Date.now(),
-        message_id: payload.data.message_id,
+        message_id: decrypted.message_id,
         status: 'error',
         message: error.message || 'Enrollment failed'
       };
@@ -2773,14 +2773,14 @@ class MQTTService {
 
       socketIOServer.emit("biometric:enroll:failed", {
         device_id: deviceId,
-        message_id: payload.data.message_id,
+        message_id: decrypted.message_id,
         status: 'error',
         message: error.message || 'Enrollment failed'
       });
 
       socketIOServer.to(`device:${deviceId}`).emit("device:biometric:enroll:failed", {
         device_id: deviceId,
-        message_id: payload.data.message_id,
+        message_id: decrypted.message_id,
         status: 'error',
         message: error.message || 'Enrollment failed'
       });

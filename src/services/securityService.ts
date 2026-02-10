@@ -119,9 +119,9 @@ class SecurityService {
       }
       
       // Extract IV, auth tag, and ciphertext
-      const iv = Buffer.from(encrypted.IV, 'hex');
-      const tag = Buffer.from(encrypted.TAG, 'hex');
-      const ciphertext = Buffer.from(encrypted.data, 'hex');
+      const iv = Buffer.from(encrypted?.IV, 'hex');
+      const tag = Buffer.from(encrypted?.TAG, 'hex');
+      const ciphertext = Buffer.from(encrypted?.data, 'hex');
 
       // Decrypt payload using AES-256-GCM
       const decipher = crypto.createDecipheriv(
