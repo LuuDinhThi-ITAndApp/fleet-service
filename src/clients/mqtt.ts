@@ -479,7 +479,7 @@ class MQTTService {
         `${config.api.baseUrl}/api/face-recognition/authenticate`,
         {
           faceVector: decrypted.biometric,
-          threshold: 0
+          threshold: 0.6
         }
       );
 
@@ -2636,7 +2636,7 @@ class MQTTService {
       logger.info(`Handling enroll biometric for device ${deviceId}`);
 
       // Check for duplicate biometric (95% similarity threshold)
-      const duplicateResult = await driverService.checkDuplicateBiometric(decrypted.biometric, 0.1);
+      const duplicateResult = await driverService.checkDuplicateBiometric(decrypted.biometric, 0.6);
       if (duplicateResult && duplicateResult.data && duplicateResult.data.length > 0) {
         logger.warn(`Duplicate biometric found for device ${deviceId}`);
         const response = {
