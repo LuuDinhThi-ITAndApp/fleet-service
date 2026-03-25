@@ -479,7 +479,7 @@ class MQTTService {
         `${config.api.baseUrl}/api/face-recognition/authenticate`,
         {
           faceVector: decrypted.biometric,
-          threshold: 0.6
+          threshold: 0.1
         }
       );
 
