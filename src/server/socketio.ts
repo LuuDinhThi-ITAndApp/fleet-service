@@ -167,6 +167,45 @@ class SocketIOService {
       }
     });
 
+    // Endpoint to check for duplicate biometrics
+    this.app.post('/api/drivers/check-duplicate-biometric', async (req, res) => {
+      try {
+        const { biometric } = req.body;
+
+        if (!biometric) {
+          return res.status(400).json({ error: 'Biometric data is required', success: false });
+        }
+
+        const biometricStr = Array.isArray(biometric) ? JSON.stringify(biometric) : biometric;
+
+        const duplicateResult = await driverService.checkDuplicateBiometric(biometricStr, 0.9);
+
+        logger.info(`Duplicate biometric check result:`, duplicateResult);
+        
+        if (duplicateResult && duplicateResult.data && duplicateResult.data.length > 0) {
+          logger.warn(`Duplicate biometric found via API`);
+          return res.json({
+            success: false,
+            isDuplicate: true,
+            message: 'Biometric already exists',
+            existing_driver: duplicateResult.data[0]
+          });
+        }
+
+        return res.json({
+          success: true,
+          isDuplicate: false,
+          message: 'Biometric is unique'
+        });
+      } catch (error: any) {
+        logger.error('Error checking duplicate biometric:', error);
+        return res.status(500).json({
+          error: error.message || 'Internal server error',
+          success: false
+        });
+      }
+    });
+
     // Driver enrollment endpoint (bypass MQTT security)
     this.app.post('/api/drivers/enroll', async (req, res) => {
       try {
@@ -174,17 +213,6 @@ class SocketIOService {
 
         if (!biometric) {
           return res.status(400).json({ error: 'Biometric data is required', success: false });
-        }
-
-        // Check for duplicate biometric
-        const duplicateResult = await driverService.checkDuplicateBiometric(biometric, 0.6);
-        if (duplicateResult && duplicateResult.data && duplicateResult.data.length > 0) {
-          logger.warn(`Duplicate biometric found via API`);
-          return res.status(400).json({
-            error: 'Biometric already exists',
-            success: false,
-            existing_driver: duplicateResult.data[0]
-          });
         }
 
         const driverName = driver_information?.driver_name || '';
