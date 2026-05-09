@@ -49,6 +49,9 @@ export const config = {
   api: {
     baseUrl: process.env.API_BASE_URL || 'http://103.216.116.186:8086',
   },
+  faceId: {
+    endpoint: process.env.FACE_ID_ENDPOINT || 'http://103.216.116.186:31000/extract',
+  },
   minio: {
     endpoint: process.env.MINIO_ENDPOINT || '103.216.116.186',
     port: parseInt(process.env.MINIO_PORT || '9000'),

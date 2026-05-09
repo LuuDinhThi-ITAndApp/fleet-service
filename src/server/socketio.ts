@@ -6,6 +6,7 @@ import { logger } from '../utils/logger';
 import { redisClient } from '../clients/redis';
 import { timescaleDB } from '../clients/timescaledb';
 import { mqttService } from '../clients/mqtt';
+import { driverService } from '../services/driverService';
 
 class SocketIOService {
   private app: express.Application;
@@ -161,6 +162,87 @@ class SocketIOService {
         logger.error('Error handling streaming request:', error);
         res.status(500).json({
           error: 'Internal server error',
+          success: false
+        });
+      }
+    });
+
+    // Driver enrollment endpoint (bypass MQTT security)
+    this.app.post('/api/drivers/enroll', async (req, res) => {
+      try {
+        const { deviceId, biometric, driver_information } = req.body;
+
+        if (!biometric) {
+          return res.status(400).json({ error: 'Biometric data is required', success: false });
+        }
+
+        // Check for duplicate biometric
+        const duplicateResult = await driverService.checkDuplicateBiometric(biometric, 0.6);
+        if (duplicateResult && duplicateResult.data && duplicateResult.data.length > 0) {
+          logger.warn(`Duplicate biometric found via API`);
+          return res.status(400).json({
+            error: 'Biometric already exists',
+            success: false,
+            existing_driver: duplicateResult.data[0]
+          });
+        }
+
+        const driverName = driver_information?.driver_name || '';
+        const nameParts = driverName.split(' ');
+        const firstName = nameParts[0] || '';
+        const lastName = nameParts.slice(1).join(' ') || '';
+
+        const getFutureDate = (yearsFromNow: number): string => {
+          const date = new Date();
+          date.setFullYear(date.getFullYear() + yearsFromNow);
+          return date.toISOString().split('T')[0];
+        };
+
+        const generateRandomPhone = (): string => {
+          const prefixes = ['090', '091', '092', '093', '094', '095', '096', '097', '098', '099'];
+          const prefix = prefixes[Math.floor(Math.random() * prefixes.length)];
+          const suffix = Math.floor(Math.random() * 10000000).toString().padStart(7, '0');
+          return `${prefix}${suffix}`;
+        };
+
+        const createDriverRequest = {
+          firstName,
+          lastName,
+          phone: generateRandomPhone(),
+          email: `${firstName?.toLowerCase()}.${lastName?.toLowerCase().replace(/\s/g, '')}@example.com`,
+          licenseNumber: driver_information?.driver_license_number || '',
+          licenseType: driver_information?.class || '',
+          licenseExpiry: driver_information?.expiry_date || getFutureDate(5),
+          status: 'active',
+          notes: 'Enrolled via REST API directly',
+          faceVector: biometric
+        };
+
+        const result = await driverService.createDriver(createDriverRequest);
+
+        if (result) {
+          // Optionally emit Socket.IO events for UI/device sync
+          if (deviceId) {
+            this.io.emit("biometric:enrolled", {
+              device_id: deviceId,
+              status: 'success',
+              driver_id: result.id,
+              driver_name: `${result.firstName} ${result.lastName}`
+            });
+          }
+
+          return res.json({
+            success: true,
+            message: 'Enrollment successful',
+            driver: result
+          });
+        } else {
+          return res.status(500).json({ error: 'Failed to create driver', success: false });
+        }
+      } catch (error: any) {
+        logger.error('Error handling direct enroll biometric:', error);
+        return res.status(500).json({
+          error: error.message || 'Internal server error',
           success: false
         });
       }

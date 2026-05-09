@@ -12,6 +12,8 @@ interface DriverData {
   phone: string;
   email: string;
   status: string;
+  faceVector?: string;
+  notes?: string;
 }
 
 interface DriverResponse {
