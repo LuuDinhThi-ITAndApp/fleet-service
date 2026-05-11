@@ -275,6 +275,9 @@ class MQTTService {
           case MqttDataType.DriverAuthenticationRequest:
             await this.handleDriverAuthentication(deviceId, wrapper.data_type, payloadData as DriverAuthenticationRequestMessage);
             break;
+          case 0:
+            // Bỏ qua heartbeat/VehicleOperationStatus tạm thời
+            break;
           default:
             logger.warn(`Unhandled WrapperMessage data_type: ${wrapper.data_type} for device ${deviceId}`);
         }

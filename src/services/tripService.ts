@@ -80,9 +80,12 @@ class TripService {
 
       const response = await this.client.post<TripResponse>('/api/trips', request);
 
-      if (response.data && response.data.data) {
-        logger.info(`Trip created successfully: ${response.data.data.id}`);
-        return response.data.data;
+      if (response.data) {
+        const tripData = response.data.data || response.data;
+        if (tripData && tripData.id) {
+          logger.info(`Trip created successfully: ${tripData.id}`);
+          return tripData;
+        }
       }
 
       return null;
@@ -115,9 +118,12 @@ class TripService {
         `/api/trips/vehicle/${vehicleId}/end-session`
       );
 
-      if (response.data && response.data.data) {
-        logger.info(`Driving session ended successfully for vehicle: ${vehicleId}`);
-        return response.data.data;
+      if (response.data) {
+        const tripData = response.data.data || response.data;
+        if (tripData && tripData.id) {
+          logger.info(`Driving session ended successfully for vehicle: ${vehicleId}`);
+          return tripData;
+        }
       }
 
       return null;
@@ -142,8 +148,11 @@ class TripService {
         `/api/trips/vehicle/${vehicleId}/latest`
       );
 
-      if (response.data && response.data.data) {
-        return response.data.data;
+      if (response.data) {
+        const tripData = response.data.data || response.data;
+        if (tripData && tripData.id) {
+          return tripData;
+        }
       }
 
       return null;
