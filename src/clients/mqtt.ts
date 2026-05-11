@@ -30,6 +30,7 @@ import {
   OccupantSeatbeltViolationMessage,
   DriverAuthenticationRequestMessage,
   DriverAuthenticationResponseMessage,
+  VehicleOperationStatusMessage
 } from "../types";
 import { redisClient } from "./redis";
 import { timescaleDB } from "./timescaledb";
@@ -275,9 +276,12 @@ class MQTTService {
           case MqttDataType.DriverAuthenticationRequest:
             await this.handleDriverAuthentication(deviceId, wrapper.data_type, payloadData as DriverAuthenticationRequestMessage);
             break;
-          case 0:
-            // Bỏ qua heartbeat/VehicleOperationStatus tạm thời
+          case MqttDataType.VehicleOperationStatus:
+            await this.handleVehicleOperationStatusNew(deviceId, payloadData as VehicleOperationStatusMessage);
             break;
+          // case 0:
+          //   // Bỏ qua heartbeat tạm thời
+          //   break;
           default:
             logger.warn(`Unhandled WrapperMessage data_type: ${wrapper.data_type} for device ${deviceId}`);
         }
@@ -3320,6 +3324,34 @@ class MQTTService {
     }
   }
 
+  private async handleVehicleOperationStatusNew(
+    deviceId: string,
+    payload: VehicleOperationStatusMessage
+  ): Promise<void> {
+    try {
+      // Map the new single location point to the legacy GPSDataPayload format
+      // to reuse exactly the same GPS logging and caching logic.
+      const fakeGpsPayload = {
+        time_stamp: payload.timestamp,
+        message_id: `v1.0.0-${payload.timestamp}`,
+        gps_data: [
+          {
+            gps_timestamp: payload.location.gps_timestamp,
+            latitude: payload.location.latitude,
+            longitude: payload.location.longitude,
+            accuracy: payload.location.accuracy || 0,
+            speed: payload.location.speed || 0,
+            altitude: payload.location.altitude || 0,
+            course: payload.location.course || 0,
+          }
+        ]
+      };
+
+      await this.handleGPSData(deviceId, fakeGpsPayload);
+    } catch (error) {
+      logger.error(`Error handling VehicleOperationStatus GPS mapping for device ${deviceId}`, error);
+    }
+  }
 }
 
 export const mqttService = new MQTTService();

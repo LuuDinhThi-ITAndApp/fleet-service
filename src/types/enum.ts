@@ -24,6 +24,7 @@ export enum MqttWrapperTopic {
 }
 
 export enum MqttDataType {
+  VehicleOperationStatus = 0,
   VehicleOperationViolation = 22,
   DriverAttentivenessViolation = 23, // DMS
   OccupantSeatbeltViolation = 24, // OMS

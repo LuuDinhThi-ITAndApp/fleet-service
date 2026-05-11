@@ -5,6 +5,8 @@ export interface GPSDataPoint {
   longitude: number;
   accuracy: number;
   speed: number;
+  altitude?: number;
+  course?: number;
 }
 
 export interface GPSDataPayload {
@@ -443,4 +445,23 @@ export interface OccupantSeatbeltViolationMessage {
   status: number; // 0-Not_Fasten, 1-Fasten
   violation_position: number; // 0-Front_Left, 1-Front_Right, 2-Rear_Left, 3-Rear_Right
   location: ViolationLocation;
+}
+
+export interface VehicleOperationStatusMessage {
+  timestamp: number;
+  session_id: number;
+  status: number; // 0 - Parking, 1 - Driving
+  parking_time: number;
+  continuous_driving_time: number;
+  session_duration: number;
+  daily_driving_time: number;
+  location: {
+    gps_timestamp: number;
+    latitude: number;
+    longitude: number;
+    altitude: number;
+    speed: number;
+    accuracy: number;
+    course: number;
+  };
 }
