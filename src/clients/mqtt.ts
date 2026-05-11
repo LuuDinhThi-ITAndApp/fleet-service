@@ -3348,6 +3348,50 @@ class MQTTService {
       };
 
       await this.handleGPSData(deviceId, fakeGpsPayload);
+
+      // get latest trip for streaming info
+      const latestTrip = await tripService.getLatestTrip(this.vehicleId);
+      if (!latestTrip) return;
+
+      // Stream parking state
+      socketIOServer.emit("parking:state", {
+        device_id: deviceId,
+        parking_id: payload.session_id.toString(),
+        parking_state: payload.status,
+        parking_duration: payload.parking_time,
+        total_parking_time: latestTrip.idleTimeSeconds || 0,
+        parking_count: 0,
+        trip_id: latestTrip.id,
+        trip_number: latestTrip.tripNumber,
+        message_id: fakeGpsPayload.message_id,
+        time_stamp: payload.timestamp,
+      });
+
+      // Stream driving time
+      socketIOServer.emit("driving:time", {
+        device_id: deviceId,
+        continuous_driving_time: payload.continuous_driving_time,
+        driving_duration: payload.session_duration,
+        actual_driving_duration: payload.daily_driving_time,
+        idle_time: latestTrip.idleTimeSeconds || 0,
+        current_speed: payload.location.speed || 0,
+        time_stamp: payload.timestamp,
+        trip_id: latestTrip.id,
+        trip_number: latestTrip.tripNumber,
+        auto_calculated: false,
+      });
+
+      socketIOServer.to(`device:${deviceId}`).emit("device:driving:time", {
+        device_id: deviceId,
+        continuous_driving_time: payload.continuous_driving_time,
+        driving_duration: payload.session_duration,
+        actual_driving_duration: payload.daily_driving_time,
+        idle_time: latestTrip.idleTimeSeconds || 0,
+        current_speed: payload.location.speed || 0,
+        trip_id: latestTrip.id,
+        time_stamp: payload.timestamp,
+        auto_calculated: false,
+      });
     } catch (error) {
       logger.error(`Error handling VehicleOperationStatus GPS mapping for device ${deviceId}`, error);
     }
