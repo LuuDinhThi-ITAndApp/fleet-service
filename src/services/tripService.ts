@@ -81,11 +81,20 @@ class TripService {
       const response = await this.client.post<TripResponse>('/api/trips', request);
 
       if (response.data) {
+        if ((response.data as any).errorType) {
+          logger.error(`API returned error with 2xx status: ${(response.data as any).description}`);
+          throw new Error((response.data as any).description || "Unknown API Error");
+        }
+
         const tripData = response.data.data || response.data;
         if (tripData && tripData.id) {
           logger.info(`Trip created successfully: ${tripData.id}`);
           return tripData;
+        } else {
+          logger.warn(`API returned 2xx but no valid trip ID. Response body: ${JSON.stringify(response.data)}`);
         }
+      } else {
+        logger.warn(`API returned empty body`);
       }
 
       return null;
@@ -157,7 +166,7 @@ class TripService {
 
       return null;
     } catch (error: any) {
-      if (error.response?.status === 404) {
+      if (error.response?.status === 404 || error.response?.status === 403) {
         logger.info(`No trips found for vehicle: ${vehicleId}`);
         return null;
       }

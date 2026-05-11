@@ -2882,12 +2882,24 @@ class MQTTService {
       
       const address = await this.getReverseGeocodingAddress(location.longitude, location.latitude);
       
-      const trip = await tripService.createTrip({
-        vehicleId: this.vehicleId,
-        driverId: this.driverId,
-        startTime: new Date(checkInTimestampMs).toISOString(),
-        startAddress: address
-      });
+      const existingTrip = await tripService.getLatestTrip(this.vehicleId);
+      let trip;
+
+      if (existingTrip && existingTrip.status === VehicleState.MOVING) {
+        logger.warn(`Vehicle ${deviceId} already has an active trip (${existingTrip.id}). Skipping trip creation.`);
+        trip = existingTrip;
+      } else {
+        const tripNumber = tripService.generateTripNumber(deviceId);
+        trip = await tripService.createTrip({
+          vehicleId: this.vehicleId,
+          driverId: this.driverId,
+          tripNumber: tripNumber,
+          startTime: new Date(checkInTimestampMs).toISOString(),
+          startAddress: address,
+          status: VehicleState.MOVING,
+          notes: `Driver: ${driverInfo.name}, License: ${driverInfo.license_number}`
+        });
+      }
 
       if (!trip) throw new Error("Failed to create trip for check in");
 
