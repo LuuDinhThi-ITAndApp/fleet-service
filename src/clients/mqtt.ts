@@ -3232,10 +3232,13 @@ class MQTTService {
         {
           faceVector: payload.biometric,
           threshold: 0.6
+        },
+        {
+          validateStatus: (status) => status < 500 // Resolve for 4xx errors instead of throwing
         }
       );
 
-      if (!authResponse.data.errorType && authResponse.data.data) {
+      if (authResponse.status === 200 && !authResponse.data.errorType && authResponse.data.data) {
         const authResult = authResponse.data.data;
         this.driverId = authResult.id || "";
         logger.info(`New driver authenticated successfully: ${authResult.firstName} ${authResult.lastName} (ID: ${this.driverId})`);
