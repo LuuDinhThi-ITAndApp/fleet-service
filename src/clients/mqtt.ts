@@ -2860,8 +2860,13 @@ class MQTTService {
         logger.warn(`Driver login failed for device ${deviceId} with reason ${payload.reason}`);
         this.publishWrapperResponse(deviceId, MqttDataType.DriverLoginResponse, {
           timestamp: Date.now(),
+          request_timestamp: payload.timestamp,
           reason: payload.reason,
-          last_activity: Date.now()
+          last_activity: {
+            activity_timestamp: Date.now(),
+            continuous_driving_time: 0,
+            daily_driving_time: 0
+          }
         });
         return;
       }
@@ -2922,8 +2927,13 @@ class MQTTService {
 
       this.publishWrapperResponse(deviceId, MqttDataType.DriverLoginResponse, {
         timestamp: Date.now(),
+        request_timestamp: payload.timestamp,
         reason: 0,
-        last_activity: Date.now()
+        last_activity: {
+          activity_timestamp: Date.now(),
+          continuous_driving_time: 0,
+          daily_driving_time: 0
+        }
       });
 
       logger.info(`New Driver check-in processed successfully for ${deviceId}`);
@@ -2991,6 +3001,7 @@ class MQTTService {
 
       this.publishWrapperResponse(deviceId, MqttDataType.DriverLogoutResponse, {
         timestamp: Date.now(),
+        request_timestamp: payload.timestamp,
         reason: 0
       });
 
@@ -3253,7 +3264,12 @@ class MQTTService {
 
         this.publishWrapperResponse(deviceId, MqttDataType.DriverAuthenticationResponse, {
           timestamp: Date.now(),
-          reason: 0 // Success
+          request_timestamp: payload.timestamp,
+          result: 1, // Success
+          driver_information: {
+            name: `${authResult.firstName} ${authResult.lastName}`,
+            license_number: authResult.licenseNumber || "None"
+          }
         });
       } else {
         logger.warn(`Driver authentication failed (unmatched) for device ${deviceId}`);
@@ -3267,14 +3283,24 @@ class MQTTService {
 
         this.publishWrapperResponse(deviceId, MqttDataType.DriverAuthenticationResponse, {
           timestamp: Date.now(),
-          reason: 1 // Face_Unmatched
+          request_timestamp: payload.timestamp,
+          result: 0, // Failure
+          driver_information: {
+            name: "None",
+            license_number: "None"
+          }
         });
       }
     } catch (error) {
       logger.error("Error handling new DriverAuthentication:", error);
       this.publishWrapperResponse(deviceId, MqttDataType.DriverAuthenticationResponse, {
         timestamp: Date.now(),
-        reason: 3 // Failure
+        request_timestamp: payload.timestamp,
+        result: 0, // Failure
+        driver_information: {
+          name: "None",
+          license_number: "None"
+        }
       });
     }
   }

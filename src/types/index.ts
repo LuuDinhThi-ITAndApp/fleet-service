@@ -365,7 +365,12 @@ export interface DriverAuthenticationRequestMessage {
 
 export interface DriverAuthenticationResponseMessage {
   timestamp: number;
-  reason: number; // 0=Success, 1=Face_Unmatched, 2=Time_Out, 3=Failure
+  request_timestamp: number;
+  result: number; // 0=Failure, 1=Success
+  driver_information: {
+    name: string;
+    license_number: string;
+  };
 }
 
 export interface LoginMessage {
@@ -384,8 +389,13 @@ export interface LoginMessage {
 
 export interface LoginResponseMessage {
   timestamp: number;
+  request_timestamp: number;
   reason: number;
-  last_activity?: number;
+  last_activity: {
+    activity_timestamp: number;
+    continuous_driving_time: number;
+    daily_driving_time: number;
+  };
 }
 
 export interface LogoutMessage {
@@ -408,6 +418,7 @@ export interface LogoutMessage {
 
 export interface LogoutResponseMessage {
   timestamp: number;
+  request_timestamp: number;
   reason: number;
 }
 
