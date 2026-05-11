@@ -15,3 +15,22 @@ export enum MqttTopic {
   AuthDeviceReq = 'driving_session/auth_device_req',
   EnrollBiometric = "driving_session/driver_enrollment",
 }
+
+export enum MqttWrapperTopic {
+  Interval = "interval",
+  Event = "event",
+  RequestUp = "request_up",
+  RequestDown = "request_down"
+}
+
+export enum MqttDataType {
+  VehicleOperationViolation = 22,
+  DriverAttentivenessViolation = 23, // DMS
+  OccupantSeatbeltViolation = 24, // OMS
+  DriverAuthenticationRequest = 40,
+  DriverLogin = 46,
+  DriverLogout = 47,
+  DriverAuthenticationResponse = 60,
+  DriverLoginResponse = 67,
+  DriverLogoutResponse = 68,
+}

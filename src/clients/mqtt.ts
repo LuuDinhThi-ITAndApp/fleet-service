@@ -22,6 +22,14 @@ import {
   EnrollBiometricData,
   AuthDeviceRequest,
   IEncryptBase,
+  WrapperMessage,
+  LoginMessage,
+  LogoutMessage,
+  VehicleOperationViolationMessage,
+  DriverAttentivenessViolationMessage,
+  OccupantSeatbeltViolationMessage,
+  DriverAuthenticationRequestMessage,
+  DriverAuthenticationResponseMessage,
 } from "../types";
 import { redisClient } from "./redis";
 import { timescaleDB } from "./timescaledb";
@@ -31,7 +39,7 @@ import { driverService } from "../services/driverService";
 import { tripService } from "../services/tripService";
 import { eventLogService } from "../services/eventLogService";
 import { CacheKeys, VehicleState } from "../utils/constants";
-import { MqttTopic } from "../types/enum";
+import { MqttTopic, MqttWrapperTopic, MqttDataType } from "../types/enum";
 import { securityService } from "../services/securityService";
 
 class MQTTService {
@@ -195,6 +203,9 @@ class MQTTService {
       config.mqtt.topics.emergency,
       config.mqtt.topics.biometricEnroll,
       config.mqtt.topics.authDeviceReq,
+      "fms/+/interval",
+      "fms/+/event",
+      "fms/+/request_up"
     ];
 
     topics.forEach((topic) => {
@@ -228,6 +239,46 @@ class MQTTService {
             break;
           }
         }
+      }
+
+      // Handle new spec WrapperMessage routing
+      if (
+        topic.includes(`/${MqttWrapperTopic.RequestUp}`) ||
+        topic.includes(`/${MqttWrapperTopic.Interval}`) ||
+        topic.includes(`/${MqttWrapperTopic.Event}`)
+      ) {
+        const wrapper = message as WrapperMessage;
+        let payloadData: any = {};
+        try {
+          payloadData = typeof wrapper.data === 'string' ? JSON.parse(wrapper.data) : wrapper.data;
+        } catch (e) {
+          logger.error(`Error parsing wrapper data for topic ${topic}`, e);
+          return;
+        }
+
+        switch (wrapper.data_type) {
+          case MqttDataType.DriverLogin:
+            await this.handleDriverLogin(deviceId, wrapper.data_type, payloadData as LoginMessage);
+            break;
+          case MqttDataType.DriverLogout:
+            await this.handleDriverLogout(deviceId, wrapper.data_type, payloadData as LogoutMessage);
+            break;
+          case MqttDataType.VehicleOperationViolation:
+            await this.handleVehicleOperationViolationNew(deviceId, payloadData as VehicleOperationViolationMessage);
+            break;
+          case MqttDataType.DriverAttentivenessViolation:
+            await this.handleDMSNew(deviceId, payloadData as DriverAttentivenessViolationMessage);
+            break;
+          case MqttDataType.OccupantSeatbeltViolation:
+            await this.handleOMSNew(deviceId, payloadData as OccupantSeatbeltViolationMessage);
+            break;
+          case MqttDataType.DriverAuthenticationRequest:
+            await this.handleDriverAuthentication(deviceId, wrapper.data_type, payloadData as DriverAuthenticationRequestMessage);
+            break;
+          default:
+            logger.warn(`Unhandled WrapperMessage data_type: ${wrapper.data_type} for device ${deviceId}`);
+        }
+        return; // Handled by wrapper routing
       }
 
       // if no cache, get from db
@@ -2786,6 +2837,445 @@ class MQTTService {
       });
     }
   }
+
+  // ==========================================
+  // NEW WRAPPER MESSAGE HANDLERS
+  // ==========================================
+
+  private publishWrapperResponse(deviceId: string, dataType: number, data: any): void {
+    if (!this.client) return;
+    const topic = `fms/${deviceId}/${MqttWrapperTopic.RequestDown}`;
+    const wrapper: WrapperMessage = {
+      data_type: dataType,
+      data: JSON.stringify(data)
+    };
+    this.client.publish(topic, JSON.stringify(wrapper), { qos: 1 });
+  }
+
+  private async handleDriverLogin(deviceId: string, dataType: number, payload: LoginMessage): Promise<void> {
+    try {
+      logger.info(`Received new DriverLogin from device: ${deviceId}`);
+
+      if (payload.reason !== 0) {
+        logger.warn(`Driver login failed for device ${deviceId} with reason ${payload.reason}`);
+        this.publishWrapperResponse(deviceId, MqttDataType.DriverLoginResponse, {
+          timestamp: Date.now(),
+          reason: payload.reason,
+          last_activity: Date.now()
+        });
+        return;
+      }
+
+      const driverInfo = payload.login_data.driver_information;
+      const location = payload.location;
+      const driver = await driverService.getDriverById(this.driverId);
+
+      const checkInTimestampMs = payload.login_data.login_timestamp + this.tzOffsetMinutes;
+      
+      const address = await this.getReverseGeocodingAddress(location.longitude, location.latitude);
+      
+      const trip = await tripService.createTrip({
+        vehicleId: this.vehicleId,
+        driverId: this.driverId,
+        startTime: new Date(checkInTimestampMs).toISOString(),
+        startAddress: address
+      });
+
+      if (!trip) throw new Error("Failed to create trip for check in");
+
+      this.cacheSessions.set(deviceId, trip.id);
+      logger.info(`Session mapped: ${deviceId} -> Trip ${trip.id}`);
+
+      const eventLogTask = eventLogService.logCheckInEvent(
+        payload.login_data.session_id || 'unknown',
+        deviceId,
+        { name: driverInfo.name, licenseNumber: driverInfo.license_number },
+        {
+          checkInTimestamp: new Date(checkInTimestampMs).toISOString(),
+          location: {
+            latitude: location.latitude,
+            longitude: location.longitude,
+            accuracy: location.accuracy || 0
+          },
+          address: await this.getReverseGeocodingAddress(location.longitude, location.latitude)
+        },
+        trip.id,
+        this.driverId
+      );
+
+      socketIOServer.emit("driver:checkin", {
+        device_id: deviceId,
+        driver_name: driverInfo.name,
+        driver_license_number: driverInfo.license_number,
+        check_in_timestamp: payload.login_data.login_timestamp,
+        location: {
+          latitude: location.latitude,
+          longitude: location.longitude,
+          address: address
+        },
+        trip_id: trip.id,
+        trip_number: trip.tripNumber,
+        timestamp: new Date().toISOString(),
+      });
+
+      await eventLogTask;
+
+      this.publishWrapperResponse(deviceId, MqttDataType.DriverLoginResponse, {
+        timestamp: Date.now(),
+        reason: 0,
+        last_activity: Date.now()
+      });
+
+      logger.info(`New Driver check-in processed successfully for ${deviceId}`);
+    } catch (error) {
+      logger.error("Error handling new DriverLogin:", error);
+    }
+  }
+
+  private async handleDriverLogout(deviceId: string, dataType: number, payload: LogoutMessage): Promise<void> {
+    try {
+      logger.info(`Received new DriverLogout from device: ${deviceId}`);
+      const driverInfo = payload.logout_data.driver_information;
+      const location = payload.location;
+
+      const checkOutTimestampMs = payload.logout_data.logout_timestamp + this.tzOffsetMinutes;
+      const durationMinutes = Math.floor(payload.logout_data.session_duration / 60);
+
+      const latestTripId = this.cacheSessions.get(deviceId);
+      const trip = await tripService.getLatestTrip(this.vehicleId);
+
+      if (trip && trip.id === latestTripId) {
+        await tripService.updateTripCheckOut(trip.id, {
+          startTime: trip.startTime,
+          endTime: new Date(checkOutTimestampMs).toISOString(),
+          endAddress: await this.getReverseGeocodingAddress(location.longitude, location.latitude),
+          durationMinutes: durationMinutes
+        });
+      }
+
+      const eventLogTask = eventLogService.logCheckOutEvent(
+        payload.logout_data.session_id || 'unknown',
+        deviceId,
+        { name: driverInfo.name, licenseNumber: driverInfo.license_number },
+        {
+          checkOutTimestamp: new Date(checkOutTimestampMs).toISOString(),
+          workingDuration: durationMinutes,
+          location: {
+            latitude: location.latitude,
+            longitude: location.longitude,
+            accuracy: location.accuracy || 0
+          },
+          address: await this.getReverseGeocodingAddress(location.longitude, location.latitude)
+        },
+        trip?.id,
+        this.driverId
+      );
+
+      socketIOServer.emit("driver:checkout", {
+        device_id: deviceId,
+        driver_name: driverInfo.name,
+        driver_license_number: driverInfo.license_number,
+        working_duration: durationMinutes,
+        check_out_timestamp: payload.logout_data.logout_timestamp,
+        location: {
+          latitude: location.latitude,
+          longitude: location.longitude,
+        },
+        trip_id: trip?.id,
+        trip_number: trip?.tripNumber,
+        timestamp: new Date().toISOString(),
+      });
+
+      this.cacheSessions.delete(deviceId);
+      await eventLogTask;
+
+      this.publishWrapperResponse(deviceId, MqttDataType.DriverLogoutResponse, {
+        timestamp: Date.now(),
+        reason: 0
+      });
+
+      logger.info(`New Driver check-out processed successfully for ${deviceId}`);
+    } catch (error) {
+      logger.error("Error handling new DriverLogout:", error);
+    }
+  }
+
+  private async handleVehicleOperationViolationNew(deviceId: string, payload: VehicleOperationViolationMessage): Promise<void> {
+    try {
+      logger.info(`Received new VehicleOperationViolation from device: ${deviceId}`);
+      const latestTripId = this.cacheSessions.get(deviceId);
+      const latestTrip = await tripService.getLatestTrip(this.vehicleId);
+
+      let violationType = "";
+      let violationValue = 0;
+
+      switch (payload.reason) {
+        case 1:
+          violationType = "CONTINUOUS_DRIVING";
+          violationValue = Math.floor(payload.continuous_driving_time / 60);
+          break;
+        case 2:
+          violationType = "PARKING_DURATION";
+          violationValue = Math.floor(payload.parking_time / 60);
+          break;
+        case 3:
+          violationType = "SPEED_LIMIT";
+          violationValue = payload.speed;
+          break;
+        case 4:
+          violationType = "DAILY_DRIVING";
+          violationValue = Math.floor(payload.daily_driving_time / 60);
+          break;
+        case 0:
+        default:
+          logger.info(`No active session or unknown reason (${payload.reason}) for violation. Skipping.`);
+          return;
+      }
+
+      logger.info(`Violation Detected: ${violationType} (Value: ${violationValue})`);
+
+      const location = payload.location;
+      const eventLogTask = eventLogService.logViolationEvent(
+        'unknown',
+        deviceId,
+        {
+          timestamp: new Date(payload.timestamp + this.tzOffsetMinutes).toISOString(),
+          messageId: 'unknown',
+          violationType: violationType as any,
+          violationValue: violationValue,
+          violationUnit: violationType === "SPEED_LIMIT" ? "km/h" : "minutes",
+        },
+        latestTrip?.id,
+        latestTrip?.driverId
+      );
+
+      socketIOServer.emit("violation:operation", {
+        device_id: deviceId,
+        trip_id: latestTrip?.id,
+        trip_number: latestTrip?.tripNumber,
+        violation_type: violationType,
+        violation_value: violationValue,
+        location: {
+          latitude: location.latitude,
+          longitude: location.longitude,
+          gps_timestamp: location.gps_timestamp
+        },
+        time_stamp: payload.timestamp,
+        message_id: 'unknown'
+      });
+
+      await eventLogTask;
+    } catch (error) {
+      logger.error("Error handling new VehicleOperationViolation:", error);
+    }
+  }
+
+  private async handleDMSNew(deviceId: string, payload: DriverAttentivenessViolationMessage): Promise<void> {
+    try {
+      logger.info(`Received new DMS Violation from device: ${deviceId}`);
+      const latestTripId = this.cacheSessions.get(deviceId);
+      const latestTrip = await tripService.getLatestTrip(this.vehicleId);
+
+      let behaviorName = "Unknown";
+      let contentTag = "Unknown";
+      switch (payload.type) {
+        case 0:
+        case 1:
+        case 2:
+          behaviorName = "Drowsiness";
+          contentTag = "Drowsiness";
+          break;
+        case 3:
+          behaviorName = "Unresponsive";
+          contentTag = "Unresponsive";
+          break;
+        case 4:
+          behaviorName = "PhoneUse";
+          contentTag = "Calling";
+          break;
+        case 5:
+          behaviorName = "Smoking";
+          contentTag = "Smoking";
+          break;
+        case 6:
+          behaviorName = "Distraction";
+          contentTag = "Distraction";
+          break;
+      }
+
+      const location = payload.location;
+      const imageUrl = `http://103.216.116.186:9000/fleet-videos/${deviceId}-${payload.timestamp}-${contentTag}.jpeg`;
+      const videoUrl = `http://103.216.116.186:9000/fleet-videos/${deviceId}-${payload.timestamp}-${contentTag}.mp4`;
+
+      eventLogService.logDMSEvent(
+        'unknown',
+        deviceId,
+        {
+          timestamp: new Date(payload.timestamp + this.tzOffsetMinutes).toISOString(),
+          messageId: 'unknown',
+          behaviorViolate: behaviorName,
+          speed: location.speed || 0,
+          location: {
+            latitude: location.latitude,
+            longitude: location.longitude,
+            gpsTimestamp: new Date(location.gps_timestamp + this.tzOffsetMinutes).toISOString(),
+          },
+          imageUrl: imageUrl,
+          videoUrl: videoUrl,
+          driverName: latestTrip?.driverName || 'Unknown',
+          driverLicenseNumber: latestTrip?.licenseNumber || 'Unknown'
+        },
+        latestTrip?.id,
+        latestTrip ? {
+          vehicleId: latestTrip.vehicleId,
+          driverId: latestTrip.driverId,
+          tripNumber: latestTrip.tripNumber,
+          licensePlate: latestTrip.licensePlate,
+          vehicleType: latestTrip.vehicleType,
+        } : undefined
+      );
+
+      socketIOServer.emit("dms:violation", {
+        device_id: deviceId,
+        trip_id: latestTrip?.id,
+        behavior_violate: payload.type,
+        behavior_name: behaviorName,
+        speed: location.speed,
+        location: {
+          latitude: location.latitude,
+          longitude: location.longitude,
+          gps_timestamp: location.gps_timestamp,
+        },
+        image_url: imageUrl,
+        video_url: videoUrl,
+        time_stamp: payload.timestamp,
+      });
+
+      logger.info(`New DMS violation logged: ${behaviorName}`);
+    } catch (error) {
+      logger.error("Error handling new DMS:", error);
+    }
+  }
+
+  private async handleOMSNew(deviceId: string, payload: OccupantSeatbeltViolationMessage): Promise<void> {
+    try {
+      logger.info(`Received new OMS Violation from device: ${deviceId}`);
+      const latestTripId = this.cacheSessions.get(deviceId);
+      const latestTrip = await tripService.getLatestTrip(this.vehicleId);
+
+      const behaviorName = payload.status === 0 ? "NoSeatbelt" : "Fasten";
+      if (payload.status !== 0) return; // Only log violations
+
+      const contentTag = "NoSeatbelt";
+      const location = payload.location;
+      const imageUrl = `http://103.216.116.186:9000/fleet-videos/${deviceId}-${payload.timestamp}-${contentTag}.jpeg`;
+      const videoUrl = `http://103.216.116.186:9000/fleet-videos/${deviceId}-${payload.timestamp}-${contentTag}.mp4`;
+
+      const seatNames = ["Front_Left", "Front_Right", "Rear_Left", "Rear_Right"];
+      const seatName = seatNames[payload.violation_position] || "Unknown";
+
+      eventLogService.logDMSEvent(
+        'unknown',
+        deviceId,
+        {
+          timestamp: new Date(payload.timestamp + this.tzOffsetMinutes).toISOString(),
+          messageId: 'unknown',
+          behaviorViolate: `${behaviorName} (${seatName})`,
+          speed: location.speed || 0,
+          location: {
+            latitude: location.latitude,
+            longitude: location.longitude,
+            gpsTimestamp: new Date(location.gps_timestamp + this.tzOffsetMinutes).toISOString(),
+          },
+          imageUrl: imageUrl,
+          videoUrl: videoUrl,
+          driverName: latestTrip?.driverName || 'Unknown',
+          driverLicenseNumber: latestTrip?.licenseNumber || 'Unknown'
+        },
+        latestTrip?.id,
+        latestTrip ? {
+          vehicleId: latestTrip.vehicleId,
+          driverId: latestTrip.driverId,
+          tripNumber: latestTrip.tripNumber,
+          licensePlate: latestTrip.licensePlate,
+          vehicleType: latestTrip.vehicleType,
+        } : undefined
+      );
+
+      socketIOServer.emit("oms:violation", {
+        device_id: deviceId,
+        trip_id: latestTrip?.id,
+        behavior_violate: payload.status,
+        behavior_name: `${behaviorName} (${seatName})`,
+        speed: location.speed,
+        location: {
+          latitude: location.latitude,
+          longitude: location.longitude,
+          gps_timestamp: location.gps_timestamp,
+        },
+        image_url: imageUrl,
+        video_url: videoUrl,
+        time_stamp: payload.timestamp,
+      });
+
+      logger.info(`New OMS violation logged: ${behaviorName} (${seatName})`);
+    } catch (error) {
+      logger.error("Error handling new OMS:", error);
+    }
+  }
+
+  private async handleDriverAuthentication(deviceId: string, dataType: number, payload: DriverAuthenticationRequestMessage): Promise<void> {
+    try {
+      logger.info(`Received new DriverAuthenticationRequest from device: ${deviceId}`);
+      const authResponse = await axios.post(
+        `${config.api.baseUrl}/api/face-recognition/authenticate`,
+        {
+          faceVector: payload.biometric,
+          threshold: 0.6
+        }
+      );
+
+      if (!authResponse.data.errorType && authResponse.data.data) {
+        const authResult = authResponse.data.data;
+        this.driverId = authResult.id || "";
+        logger.info(`New driver authenticated successfully: ${authResult.firstName} ${authResult.lastName} (ID: ${this.driverId})`);
+        
+        socketIOServer.emit("driver:authenticated", {
+          device_id: deviceId,
+          message_id: 'unknown',
+          status: 'success',
+          driver_id: authResult.id,
+          driver_name: `${authResult.firstName} ${authResult.lastName}`
+        });
+
+        this.publishWrapperResponse(deviceId, MqttDataType.DriverAuthenticationResponse, {
+          timestamp: Date.now(),
+          reason: 0 // Success
+        });
+      } else {
+        logger.warn(`Driver authentication failed (unmatched) for device ${deviceId}`);
+        
+        socketIOServer.emit("driver:auth:failed", {
+          device_id: deviceId,
+          message_id: 'unknown',
+          status: 'failed',
+          message: 'Face not matched'
+        });
+
+        this.publishWrapperResponse(deviceId, MqttDataType.DriverAuthenticationResponse, {
+          timestamp: Date.now(),
+          reason: 1 // Face_Unmatched
+        });
+      }
+    } catch (error) {
+      logger.error("Error handling new DriverAuthentication:", error);
+      this.publishWrapperResponse(deviceId, MqttDataType.DriverAuthenticationResponse, {
+        timestamp: Date.now(),
+        reason: 3 // Failure
+      });
+    }
+  }
+
 }
 
 export const mqttService = new MQTTService();

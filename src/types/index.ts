@@ -338,3 +338,98 @@ export interface EmergencyPayload {
     longitude: number;
   };
 }
+
+// ==========================================
+// NEW MQTT API SPEC v1.0.0 TYPES
+// ==========================================
+
+export interface WrapperMessage {
+  data: string; // JSON string payload
+  data_type: number;
+}
+
+export interface ViolationLocation {
+  gps_timestamp: number;
+  latitude: number;
+  longitude: number;
+  altitude?: number;
+  accuracy?: number;
+  course?: number;
+  speed?: number;
+}
+
+export interface DriverAuthenticationRequestMessage {
+  timestamp: number;
+  biometric: string;
+}
+
+export interface DriverAuthenticationResponseMessage {
+  timestamp: number;
+  reason: number; // 0=Success, 1=Face_Unmatched, 2=Time_Out, 3=Failure
+}
+
+export interface LoginMessage {
+  timestamp: number;
+  reason: number; // 0=Success, 1=Failure_Vehicle_Driving, 2=Failure_Exceed_Attempt
+  location: ViolationLocation;
+  login_data: {
+    driver_information: {
+      name: string;
+      license_number: string;
+    };
+    login_timestamp: number;
+    session_id: string;
+  };
+}
+
+export interface LoginResponseMessage {
+  timestamp: number;
+  reason: number;
+  last_activity?: number;
+}
+
+export interface LogoutMessage {
+  timestamp: number;
+  reason: number;
+  location: ViolationLocation;
+  logout_data: {
+    driver_information: {
+      name: string;
+      license_number: string;
+    };
+    session_duration: number; // seconds
+    logout_timestamp: number;
+    continuous_driving_time: number; // seconds
+    daily_driving_time: number; // seconds
+    activity_timestamp: number;
+    session_id: string;
+  };
+}
+
+export interface LogoutResponseMessage {
+  timestamp: number;
+  reason: number;
+}
+
+export interface VehicleOperationViolationMessage {
+  timestamp: number;
+  reason: number; // 0=No_Active_Login_Session, 1=Exceed_Continuous_Driving_Limit, 2=Exceed_Parking_Limit, 3=Exceed_Speed_Limit, 4=Exceed_Daily_Driving_Limit
+  continuous_driving_time: number;
+  parking_time: number;
+  daily_driving_time: number;
+  speed: number;
+  location: ViolationLocation;
+}
+
+export interface DriverAttentivenessViolationMessage {
+  timestamp: number;
+  type: number; // 0-Drowsiness, 1-Microsleep, 2-Sleep, 3-Unresponsive, 4-PhoneUsage, 5-Smoking, 6-Distraction
+  location: ViolationLocation;
+}
+
+export interface OccupantSeatbeltViolationMessage {
+  timestamp: number;
+  status: number; // 0-Not_Fasten, 1-Fasten
+  violation_position: number; // 0-Front_Left, 1-Front_Right, 2-Rear_Left, 3-Rear_Right
+  location: ViolationLocation;
+}
