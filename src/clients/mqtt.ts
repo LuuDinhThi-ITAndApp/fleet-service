@@ -2880,12 +2880,19 @@ class MQTTService {
 
       const driverInfo = payload.login_data.driver_information;
       const location = payload.location;
-      const driver = await driverService.getDriverById(this.driverId);
+
+      const driver = await driverService.getDriverById(this.driverId).catch((e) => {
+        logger.warn(`getDriverById failed on login for device ${deviceId}:`, e);
+        return null;
+      });
 
       const checkInTimestampMs = payload.login_data.login_timestamp + this.tzOffsetMinutes;
       const address = await this.getReverseGeocodingAddress(location.longitude, location.latitude);
 
-      const existingTrip = await tripService.getLatestTrip(this.vehicleId);
+      const existingTrip = await tripService.getLatestTrip(this.vehicleId).catch((e) => {
+        logger.warn(`getLatestTrip failed on login for device ${deviceId}:`, e);
+        return null;
+      });
       const hasActiveTrip = existingTrip?.status === VehicleState.MOVING;
       let trip: typeof existingTrip | null = null;
 
@@ -2913,29 +2920,13 @@ class MQTTService {
       if (trip) {
         this.cacheSessions.set(deviceId, trip.id);
         logger.info(`Session mapped: ${deviceId} -> Trip ${trip.id}`);
-
-        await redisClient.cacheDeviceState(deviceId, {
-          device_id: deviceId,
-          timestamp: new Date(),
-          event_type: CacheKeys.VEHICLE_STATE,
-          data: {
-            trip_id: trip.id,
-            trip_number: trip.tripNumber,
-            status: VehicleState.MOVING,
-          },
-        });
-
-        if (!hasActiveTrip) {
-          this.startDrivingTimeTracking();
-          logger.info("Driving time tracking started for new trip");
-        }
       } else {
         logger.error(`Cannot create trip for check-in on device ${deviceId}. Emitting socket without trip.`);
       }
 
       const fakeMessageId = `v1.0.0-${payload.timestamp}`;
 
-      // Always emit socket regardless of trip creation result (matching old handler behavior)
+      // Always emit socket immediately — before any further async work (matching old handler behavior)
       socketIOServer.emit("driver:checkin", {
         device_id: deviceId,
         driver_name: driverInfo.name,
@@ -2960,6 +2951,25 @@ class MQTTService {
         ...payload,
         trip_id: trip?.id || "none",
       });
+
+      // Post-emit: async work that must not block socket delivery
+      if (trip) {
+        await redisClient.cacheDeviceState(deviceId, {
+          device_id: deviceId,
+          timestamp: new Date(),
+          event_type: CacheKeys.VEHICLE_STATE,
+          data: {
+            trip_id: trip.id,
+            trip_number: trip.tripNumber,
+            status: VehicleState.MOVING,
+          },
+        }).catch((e) => logger.warn(`cacheDeviceState failed for device ${deviceId}:`, e));
+
+        if (!hasActiveTrip) {
+          this.startDrivingTimeTracking();
+          logger.info("Driving time tracking started for new trip");
+        }
+      }
 
       if (trip && !hasActiveTrip) {
         socketIOServer.emit("trip:created", {
