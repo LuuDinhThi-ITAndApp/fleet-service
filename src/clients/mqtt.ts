@@ -2883,70 +2883,59 @@ class MQTTService {
       const driver = await driverService.getDriverById(this.driverId);
 
       const checkInTimestampMs = payload.login_data.login_timestamp + this.tzOffsetMinutes;
-      
       const address = await this.getReverseGeocodingAddress(location.longitude, location.latitude);
-      
+
       const existingTrip = await tripService.getLatestTrip(this.vehicleId);
       const hasActiveTrip = existingTrip?.status === VehicleState.MOVING;
-      let trip;
+      let trip: typeof existingTrip | null = null;
 
       if (hasActiveTrip) {
         logger.warn(`Vehicle ${deviceId} already has an active trip (${existingTrip!.id}). Skipping trip creation.`);
         trip = existingTrip!;
       } else {
-        const tripNumber = tripService.generateTripNumber(deviceId);
-        trip = await tripService.createTrip({
-          vehicleId: this.vehicleId,
-          driverId: this.driverId,
-          tripNumber: tripNumber,
-          startTime: new Date(checkInTimestampMs).toISOString(),
-          startAddress: address,
-          status: VehicleState.MOVING,
-          notes: `Driver: ${driverInfo.name}, License: ${driverInfo.license_number}`
-        });
+        try {
+          const tripNumber = tripService.generateTripNumber(deviceId);
+          trip = await tripService.createTrip({
+            vehicleId: this.vehicleId,
+            driverId: this.driverId,
+            tripNumber: tripNumber,
+            startTime: new Date(checkInTimestampMs).toISOString(),
+            startAddress: address,
+            status: VehicleState.MOVING,
+            notes: `Driver: ${driverInfo.name}, License: ${driverInfo.license_number}`
+          });
+        } catch (e) {
+          logger.error(`Failed to create trip for check-in on device ${deviceId}:`, e);
+          trip = null;
+        }
       }
 
-      if (!trip) throw new Error("Failed to create trip for check in");
+      if (trip) {
+        this.cacheSessions.set(deviceId, trip.id);
+        logger.info(`Session mapped: ${deviceId} -> Trip ${trip.id}`);
 
-      this.cacheSessions.set(deviceId, trip.id);
-      logger.info(`Session mapped: ${deviceId} -> Trip ${trip.id}`);
+        await redisClient.cacheDeviceState(deviceId, {
+          device_id: deviceId,
+          timestamp: new Date(),
+          event_type: CacheKeys.VEHICLE_STATE,
+          data: {
+            trip_id: trip.id,
+            trip_number: trip.tripNumber,
+            status: VehicleState.MOVING,
+          },
+        });
 
-      await redisClient.cacheDeviceState(deviceId, {
-        device_id: deviceId,
-        timestamp: new Date(),
-        event_type: CacheKeys.VEHICLE_STATE,
-        data: {
-          trip_id: trip.id,
-          trip_number: trip.tripNumber,
-          status: VehicleState.MOVING,
-        },
-      });
-
-      if (!hasActiveTrip) {
-        this.startDrivingTimeTracking();
-        logger.info("Driving time tracking started for new trip");
+        if (!hasActiveTrip) {
+          this.startDrivingTimeTracking();
+          logger.info("Driving time tracking started for new trip");
+        }
+      } else {
+        logger.error(`Cannot create trip for check-in on device ${deviceId}. Emitting socket without trip.`);
       }
 
       const fakeMessageId = `v1.0.0-${payload.timestamp}`;
-      const eventLogTask = !hasActiveTrip
-        ? eventLogService.logCheckInEvent(
-            fakeMessageId,
-            this.vehicleId,
-            { name: driverInfo.name, licenseNumber: driverInfo.license_number },
-            {
-              checkInTimestamp: new Date(checkInTimestampMs).toISOString(),
-              location: {
-                latitude: location.latitude,
-                longitude: location.longitude,
-                accuracy: location.accuracy || 0
-              },
-              address: address
-            },
-            trip.id,
-            this.driverId
-          )
-        : Promise.resolve();
 
+      // Always emit socket regardless of trip creation result (matching old handler behavior)
       socketIOServer.emit("driver:checkin", {
         device_id: deviceId,
         driver_name: driverInfo.name,
@@ -2963,16 +2952,16 @@ class MQTTService {
         },
         message_id: fakeMessageId,
         time_stamp: payload.timestamp,
-        trip_id: trip.id,
+        trip_id: trip?.id || "none",
       });
 
       socketIOServer.to(`device:${deviceId}`).emit("device:checkin", {
         device_id: deviceId,
         ...payload,
-        trip_id: trip.id,
+        trip_id: trip?.id || "none",
       });
 
-      if (!hasActiveTrip) {
+      if (trip && !hasActiveTrip) {
         socketIOServer.emit("trip:created", {
           device_id: deviceId,
           trip_id: trip.id,
@@ -2981,9 +2970,24 @@ class MQTTService {
           start_time: trip.startTime,
           status: trip.status,
         });
-      }
 
-      await eventLogTask;
+        await eventLogService.logCheckInEvent(
+          fakeMessageId,
+          this.vehicleId,
+          { name: driverInfo.name, licenseNumber: driverInfo.license_number },
+          {
+            checkInTimestamp: new Date(checkInTimestampMs).toISOString(),
+            location: {
+              latitude: location.latitude,
+              longitude: location.longitude,
+              accuracy: location.accuracy || 0
+            },
+            address: address
+          },
+          trip.id,
+          this.driverId
+        );
+      }
 
       this.publishWrapperResponse(deviceId, MqttDataType.DriverLoginResponse, {
         timestamp: Date.now(),
@@ -3010,46 +3014,12 @@ class MQTTService {
 
       const checkOutTimestampMs = payload.logout_data.logout_timestamp + this.tzOffsetMinutes;
       const durationMinutes = Math.floor(payload.logout_data.session_duration / 60);
-
-      const latestTripId = this.cacheSessions.get(deviceId);
-      const trip = await tripService.getLatestTrip(this.vehicleId);
-
-      if (trip && trip.id === latestTripId) {
-        await tripService.updateTripCheckOut(trip.id, {
-          startTime: trip.startTime,
-          endTime: new Date(checkOutTimestampMs).toISOString(),
-          endAddress: await this.getReverseGeocodingAddress(location.longitude, location.latitude),
-          durationMinutes: durationMinutes
-        });
-
-        this.stopDrivingTimeTracking();
-        await redisClient.deleteParkingEndTime(deviceId);
-        await redisClient.deleteDrivingStartTime(deviceId);
-        await redisClient.deleteContinuousDrivingTime(deviceId);
-        logger.info("Driving time tracking stopped and Redis cleanup done for completed trip");
-      }
-
       const fakeMessageId = `v1.0.0-${payload.timestamp}`;
+
+      // Geocode address before emitting socket
       const address = await this.getReverseGeocodingAddress(location.longitude, location.latitude);
 
-      const eventLogTask = eventLogService.logCheckOutEvent(
-        fakeMessageId,
-        this.vehicleId,
-        { name: driverInfo.name, licenseNumber: driverInfo.license_number },
-        {
-          checkOutTimestamp: new Date(checkOutTimestampMs).toISOString(),
-          workingDuration: durationMinutes,
-          location: {
-            latitude: location.latitude,
-            longitude: location.longitude,
-            accuracy: location.accuracy || 0
-          },
-          address: address
-        },
-        trip?.id,
-        this.driverId
-      );
-
+      // Emit socket BEFORE DB operations (matching old handleDriverCheckOut pattern)
       socketIOServer.emit("driver:checkout", {
         device_id: deviceId,
         driver_name: driverInfo.name,
@@ -3072,7 +3042,24 @@ class MQTTService {
         ...payload,
       });
 
+      // DB operations after socket emit
+      const latestTripId = this.cacheSessions.get(deviceId);
+      const trip = await tripService.getLatestTrip(this.vehicleId);
+
       if (trip && trip.id === latestTripId) {
+        await tripService.updateTripCheckOut(trip.id, {
+          startTime: trip.startTime,
+          endTime: new Date(checkOutTimestampMs).toISOString(),
+          endAddress: address,
+          durationMinutes: durationMinutes
+        });
+
+        this.stopDrivingTimeTracking();
+        await redisClient.deleteParkingEndTime(deviceId);
+        await redisClient.deleteDrivingStartTime(deviceId);
+        await redisClient.deleteContinuousDrivingTime(deviceId);
+        logger.info("Driving time tracking stopped and Redis cleanup done for completed trip");
+
         socketIOServer.emit("trip:completed", {
           device_id: deviceId,
           trip_id: trip.id,
@@ -3086,7 +3073,24 @@ class MQTTService {
       }
 
       this.cacheSessions.delete(deviceId);
-      await eventLogTask;
+
+      await eventLogService.logCheckOutEvent(
+        fakeMessageId,
+        this.vehicleId,
+        { name: driverInfo.name, licenseNumber: driverInfo.license_number },
+        {
+          checkOutTimestamp: new Date(checkOutTimestampMs).toISOString(),
+          workingDuration: durationMinutes,
+          location: {
+            latitude: location.latitude,
+            longitude: location.longitude,
+            accuracy: location.accuracy || 0
+          },
+          address: address
+        },
+        trip?.id,
+        this.driverId
+      );
 
       this.publishWrapperResponse(deviceId, MqttDataType.DriverLogoutResponse, {
         timestamp: Date.now(),
