@@ -2887,11 +2887,12 @@ class MQTTService {
       const address = await this.getReverseGeocodingAddress(location.longitude, location.latitude);
       
       const existingTrip = await tripService.getLatestTrip(this.vehicleId);
+      const hasActiveTrip = existingTrip?.status === VehicleState.MOVING;
       let trip;
 
-      if (existingTrip && existingTrip.status === VehicleState.MOVING) {
-        logger.warn(`Vehicle ${deviceId} already has an active trip (${existingTrip.id}). Skipping trip creation.`);
-        trip = existingTrip;
+      if (hasActiveTrip) {
+        logger.warn(`Vehicle ${deviceId} already has an active trip (${existingTrip!.id}). Skipping trip creation.`);
+        trip = existingTrip!;
       } else {
         const tripNumber = tripService.generateTripNumber(deviceId);
         trip = await tripService.createTrip({
@@ -2921,28 +2922,30 @@ class MQTTService {
         },
       });
 
-      if (!existingTrip) {
+      if (!hasActiveTrip) {
         this.startDrivingTimeTracking();
         logger.info("Driving time tracking started for new trip");
       }
 
       const fakeMessageId = `v1.0.0-${payload.timestamp}`;
-      const eventLogTask = eventLogService.logCheckInEvent(
-        fakeMessageId,
-        this.vehicleId,
-        { name: driverInfo.name, licenseNumber: driverInfo.license_number },
-        {
-          checkInTimestamp: new Date(checkInTimestampMs).toISOString(),
-          location: {
-            latitude: location.latitude,
-            longitude: location.longitude,
-            accuracy: location.accuracy || 0
-          },
-          address: address
-        },
-        trip.id,
-        this.driverId
-      );
+      const eventLogTask = !hasActiveTrip
+        ? eventLogService.logCheckInEvent(
+            fakeMessageId,
+            this.vehicleId,
+            { name: driverInfo.name, licenseNumber: driverInfo.license_number },
+            {
+              checkInTimestamp: new Date(checkInTimestampMs).toISOString(),
+              location: {
+                latitude: location.latitude,
+                longitude: location.longitude,
+                accuracy: location.accuracy || 0
+              },
+              address: address
+            },
+            trip.id,
+            this.driverId
+          )
+        : Promise.resolve();
 
       socketIOServer.emit("driver:checkin", {
         device_id: deviceId,
@@ -2969,7 +2972,7 @@ class MQTTService {
         trip_id: trip.id,
       });
 
-      if (!existingTrip) {
+      if (!hasActiveTrip) {
         socketIOServer.emit("trip:created", {
           device_id: deviceId,
           trip_id: trip.id,
@@ -3141,7 +3144,7 @@ class MQTTService {
         {
           timestamp: new Date(payload.timestamp + this.tzOffsetMinutes).toISOString(),
           messageId: fakeMessageId,
-          violationType: violationType as any,
+          violationType: violationType as 'CONTINUOUS_DRIVING' | 'PARKING_DURATION' | 'SPEED_LIMIT' | 'DAILY_DRIVING',
           violationValue: violationValue,
           violationUnit: violationType === "SPEED_LIMIT" ? "km/h" : "minutes",
         },
@@ -3229,7 +3232,7 @@ class MQTTService {
       const fakeMessageId = `v1.0.0-${payload.timestamp}`;
       const eventId = `dms_${deviceId}_${fakeMessageId}`;
 
-      eventLogService.logDMSEvent(
+      await eventLogService.logDMSEvent(
         eventId,
         this.vehicleId,
         {
@@ -3310,13 +3313,13 @@ class MQTTService {
       const imageUrl = `http://103.216.116.186:9000/fleet-videos/${deviceId}-${payload.timestamp}-${contentTag}.jpeg`;
       const videoUrl = `http://103.216.116.186:9000/fleet-videos/${deviceId}-${payload.timestamp}-${contentTag}.mp4`;
 
-      const seatNames = ["Front_Left", "Front_Right", "Rear_Left", "Rear_Right"];
+      const seatNames = ["None", "Front_Left", "Front_Right", "Front_Left_Right"];
       const seatName = seatNames[payload.violation_position] || "Unknown";
 
       const fakeMessageId = `v1.0.0-${payload.timestamp}`;
       const eventId = `oms_${deviceId}_${fakeMessageId}`;
 
-      eventLogService.logDMSEvent(
+      await eventLogService.logDMSEvent(
         eventId,
         this.vehicleId,
         {
@@ -3497,25 +3500,12 @@ class MQTTService {
 
       await this.handleGPSData(deviceId, fakeGpsPayload);
 
-      // get latest trip for streaming info
       const latestTrip = await tripService.getLatestTrip(this.vehicleId);
       if (!latestTrip) return;
 
-      // Stream parking state
-      socketIOServer.emit("parking:state", {
-        device_id: deviceId,
-        parking_id: payload.session_id.toString(),
-        parking_state: payload.status,
-        parking_duration: payload.parking_time,
-        total_parking_time: latestTrip.idleTimeSeconds || 0,
-        parking_count: 0,
-        trip_id: latestTrip.id,
-        trip_number: latestTrip.tripNumber,
-        message_id: fakeGpsPayload.message_id,
-        time_stamp: payload.timestamp,
-      });
+      // parking:state tạm dừng — gửi liên tục theo interval gây spam socket
+      // socketIOServer.emit("parking:state", { ... });
 
-      // Stream driving time
       socketIOServer.emit("driving:time", {
         device_id: deviceId,
         continuous_driving_time: payload.continuous_driving_time,

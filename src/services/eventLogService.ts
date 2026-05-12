@@ -494,7 +494,7 @@ class EventLogService {
     violationData: {
       timestamp: string;
       messageId: string;
-      violationType: 'CONTINUOUS_DRIVING' | 'PARKING_DURATION' | 'SPEED_LIMIT';
+      violationType: 'CONTINUOUS_DRIVING' | 'PARKING_DURATION' | 'SPEED_LIMIT' | 'DAILY_DRIVING';
       violationValue: number;
       violationUnit: string;
       videoUrl?: string;
@@ -508,6 +508,7 @@ class EventLogService {
         'SPEED_LIMIT': 'speed_limit_violate',
         'CONTINUOUS_DRIVING': 'continuous_driving_time_violate',
         'PARKING_DURATION': 'parking_duration_violate',
+        'DAILY_DRIVING': 'daily_driving_time_violate',
       };
 
       const eventLog: EventLogRequest = {
