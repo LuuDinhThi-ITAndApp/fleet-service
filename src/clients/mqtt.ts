@@ -2881,25 +2881,31 @@ class MQTTService {
       const driverInfo = payload.login_data.driver_information;
       const location = payload.location;
 
+      logger.info(`[handleDriverLogin] driverId=${this.driverId}, vehicleId=${this.vehicleId}`);
+
       const driver = await driverService.getDriverById(this.driverId).catch((e) => {
         logger.warn(`getDriverById failed on login for device ${deviceId}:`, e);
         return null;
       });
+      logger.info(`[handleDriverLogin] getDriverById result: ${driver ? driver.id : 'null'}`);
 
       const checkInTimestampMs = payload.login_data.login_timestamp + this.tzOffsetMinutes;
       const address = await this.getReverseGeocodingAddress(location.longitude, location.latitude);
+      logger.info(`[handleDriverLogin] geocoding address: "${address}"`);
 
       const existingTrip = await tripService.getLatestTrip(this.vehicleId).catch((e) => {
         logger.warn(`getLatestTrip failed on login for device ${deviceId}:`, e);
         return null;
       });
       const hasActiveTrip = existingTrip?.status === VehicleState.MOVING;
+      logger.info(`[handleDriverLogin] existingTrip=${existingTrip?.id || 'null'}, status=${existingTrip?.status || 'null'}, hasActiveTrip=${hasActiveTrip}`);
       let trip: typeof existingTrip | null = null;
 
       if (hasActiveTrip) {
         logger.warn(`Vehicle ${deviceId} already has an active trip (${existingTrip!.id}). Skipping trip creation.`);
         trip = existingTrip!;
       } else {
+        logger.info(`[handleDriverLogin] Creating new trip for device ${deviceId}`);
         try {
           const tripNumber = tripService.generateTripNumber(deviceId);
           trip = await tripService.createTrip({
@@ -2911,8 +2917,9 @@ class MQTTService {
             status: VehicleState.MOVING,
             notes: `Driver: ${driverInfo.name}, License: ${driverInfo.license_number}`
           });
+          logger.info(`[handleDriverLogin] createTrip result: ${trip?.id || 'null'}`);
         } catch (e) {
-          logger.error(`Failed to create trip for check-in on device ${deviceId}:`, e);
+          logger.error(`[handleDriverLogin] Failed to create trip for check-in on device ${deviceId}:`, e);
           trip = null;
         }
       }
@@ -2927,7 +2934,7 @@ class MQTTService {
       const fakeMessageId = `v1.0.0-${payload.timestamp}`;
 
       // Always emit socket immediately — before any further async work (matching old handler behavior)
-      socketIOServer.emit("driver:checkin", {
+      const checkinPayload = {
         device_id: deviceId,
         driver_name: driverInfo.name,
         driver_license: driverInfo.license_number,
@@ -2944,13 +2951,22 @@ class MQTTService {
         message_id: fakeMessageId,
         time_stamp: payload.timestamp,
         trip_id: trip?.id || "none",
-      });
+      };
+
+      logger.info(`[handleDriverLogin] Emitting driver:checkin socket for device ${deviceId}, trip_id=${trip?.id || "none"}, driver=${driverInfo.name}`);
+      logger.debug(`[handleDriverLogin] driver:checkin payload: ${JSON.stringify(checkinPayload)}`);
+
+      socketIOServer.emit("driver:checkin", checkinPayload);
+
+      logger.info(`[handleDriverLogin] driver:checkin emitted successfully for device ${deviceId}`);
 
       socketIOServer.to(`device:${deviceId}`).emit("device:checkin", {
         device_id: deviceId,
         ...payload,
         trip_id: trip?.id || "none",
       });
+
+      logger.info(`[handleDriverLogin] device:checkin emitted to room device:${deviceId}`);
 
       // Post-emit: async work that must not block socket delivery
       if (trip) {
