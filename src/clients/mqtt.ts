@@ -2910,9 +2910,26 @@ class MQTTService {
       this.cacheSessions.set(deviceId, trip.id);
       logger.info(`Session mapped: ${deviceId} -> Trip ${trip.id}`);
 
+      await redisClient.cacheDeviceState(deviceId, {
+        device_id: deviceId,
+        timestamp: new Date(),
+        event_type: CacheKeys.VEHICLE_STATE,
+        data: {
+          trip_id: trip.id,
+          trip_number: trip.tripNumber,
+          status: VehicleState.MOVING,
+        },
+      });
+
+      if (!existingTrip) {
+        this.startDrivingTimeTracking();
+        logger.info("Driving time tracking started for new trip");
+      }
+
+      const fakeMessageId = `v1.0.0-${payload.timestamp}`;
       const eventLogTask = eventLogService.logCheckInEvent(
-        payload.login_data.session_id || 'unknown',
-        deviceId,
+        fakeMessageId,
+        this.vehicleId,
         { name: driverInfo.name, licenseNumber: driverInfo.license_number },
         {
           checkInTimestamp: new Date(checkInTimestampMs).toISOString(),
@@ -2921,7 +2938,7 @@ class MQTTService {
             longitude: location.longitude,
             accuracy: location.accuracy || 0
           },
-          address: await this.getReverseGeocodingAddress(location.longitude, location.latitude)
+          address: address
         },
         trip.id,
         this.driverId
@@ -2930,17 +2947,38 @@ class MQTTService {
       socketIOServer.emit("driver:checkin", {
         device_id: deviceId,
         driver_name: driverInfo.name,
-        driver_license_number: driverInfo.license_number,
+        driver_license: driverInfo.license_number,
+        driver_license_type: driver?.licenseType,
+        driver_license_expiry: driver?.licenseExpiry,
         check_in_timestamp: payload.login_data.login_timestamp,
         location: {
           latitude: location.latitude,
           longitude: location.longitude,
+          accuracy: location.accuracy || 0,
+          gps_timestamp: location.gps_timestamp,
           address: address
         },
+        message_id: fakeMessageId,
+        time_stamp: payload.timestamp,
         trip_id: trip.id,
-        trip_number: trip.tripNumber,
-        timestamp: new Date().toISOString(),
       });
+
+      socketIOServer.to(`device:${deviceId}`).emit("device:checkin", {
+        device_id: deviceId,
+        ...payload,
+        trip_id: trip.id,
+      });
+
+      if (!existingTrip) {
+        socketIOServer.emit("trip:created", {
+          device_id: deviceId,
+          trip_id: trip.id,
+          trip_number: trip.tripNumber,
+          driver_name: driverInfo.name,
+          start_time: trip.startTime,
+          status: trip.status,
+        });
+      }
 
       await eventLogTask;
 
@@ -2980,11 +3018,20 @@ class MQTTService {
           endAddress: await this.getReverseGeocodingAddress(location.longitude, location.latitude),
           durationMinutes: durationMinutes
         });
+
+        this.stopDrivingTimeTracking();
+        await redisClient.deleteParkingEndTime(deviceId);
+        await redisClient.deleteDrivingStartTime(deviceId);
+        await redisClient.deleteContinuousDrivingTime(deviceId);
+        logger.info("Driving time tracking stopped and Redis cleanup done for completed trip");
       }
 
+      const fakeMessageId = `v1.0.0-${payload.timestamp}`;
+      const address = await this.getReverseGeocodingAddress(location.longitude, location.latitude);
+
       const eventLogTask = eventLogService.logCheckOutEvent(
-        payload.logout_data.session_id || 'unknown',
-        deviceId,
+        fakeMessageId,
+        this.vehicleId,
         { name: driverInfo.name, licenseNumber: driverInfo.license_number },
         {
           checkOutTimestamp: new Date(checkOutTimestampMs).toISOString(),
@@ -2994,7 +3041,7 @@ class MQTTService {
             longitude: location.longitude,
             accuracy: location.accuracy || 0
           },
-          address: await this.getReverseGeocodingAddress(location.longitude, location.latitude)
+          address: address
         },
         trip?.id,
         this.driverId
@@ -3003,17 +3050,37 @@ class MQTTService {
       socketIOServer.emit("driver:checkout", {
         device_id: deviceId,
         driver_name: driverInfo.name,
-        driver_license_number: driverInfo.license_number,
-        working_duration: durationMinutes,
+        driver_license: driverInfo.license_number,
         check_out_timestamp: payload.logout_data.logout_timestamp,
+        working_duration: durationMinutes,
         location: {
           latitude: location.latitude,
           longitude: location.longitude,
+          accuracy: location.accuracy || 0,
+          gps_timestamp: location.gps_timestamp,
+          address: address
         },
-        trip_id: trip?.id,
-        trip_number: trip?.tripNumber,
-        timestamp: new Date().toISOString(),
+        message_id: fakeMessageId,
+        time_stamp: payload.timestamp,
       });
+
+      socketIOServer.to(`device:${deviceId}`).emit("device:checkout", {
+        device_id: deviceId,
+        ...payload,
+      });
+
+      if (trip && trip.id === latestTripId) {
+        socketIOServer.emit("trip:completed", {
+          device_id: deviceId,
+          trip_id: trip.id,
+          trip_number: trip.tripNumber,
+          driver_name: driverInfo.name,
+          start_time: trip.startTime,
+          end_time: new Date(checkOutTimestampMs).toISOString(),
+          duration_minutes: durationMinutes,
+          status: VehicleState.COMPLETED,
+        });
+      }
 
       this.cacheSessions.delete(deviceId);
       await eventLogTask;
@@ -3064,13 +3131,16 @@ class MQTTService {
 
       logger.info(`Violation Detected: ${violationType} (Value: ${violationValue})`);
 
+      const fakeMessageId = `v1.0.0-${payload.timestamp}`;
+      const eventId = `violation_${deviceId}_${fakeMessageId}`;
+
       const location = payload.location;
-      const eventLogTask = eventLogService.logViolationEvent(
-        'unknown',
-        deviceId,
+      const violationEvent = await eventLogService.logViolationEvent(
+        eventId,
+        this.vehicleId,
         {
           timestamp: new Date(payload.timestamp + this.tzOffsetMinutes).toISOString(),
-          messageId: 'unknown',
+          messageId: fakeMessageId,
           violationType: violationType as any,
           violationValue: violationValue,
           violationUnit: violationType === "SPEED_LIMIT" ? "km/h" : "minutes",
@@ -3079,22 +3149,41 @@ class MQTTService {
         latestTrip?.driverId
       );
 
-      socketIOServer.emit("violation:operation", {
+      if (violationEvent?.id && (violationType === "CONTINUOUS_DRIVING" || violationType === "PARKING_DURATION")) {
+        await redisClient.cacheViolationEventId(deviceId, violationType as any, violationEvent.id);
+        logger.info(`Cached violation event ID for ${violationType}: ${violationEvent.id}`);
+      }
+
+      let speedViolationCount = 0;
+      if (violationType === "SPEED_LIMIT" && latestTrip) {
+        speedViolationCount = await eventLogService.countSpeedViolationsBySession(latestTrip.id);
+      }
+
+      socketIOServer.emit("violation:detected", {
         device_id: deviceId,
         trip_id: latestTrip?.id,
+        eventId: eventId,
         trip_number: latestTrip?.tripNumber,
         violation_type: violationType,
-        violation_value: violationValue,
-        location: {
-          latitude: location.latitude,
-          longitude: location.longitude,
-          gps_timestamp: location.gps_timestamp
-        },
+        continuous_driving_time_violate: payload.continuous_driving_time,
+        parking_duration_violate: payload.parking_time,
+        speed_limit_violate: payload.speed,
+        speed_violation_count: speedViolationCount,
+        updated: false,
+        message_id: fakeMessageId,
         time_stamp: payload.timestamp,
-        message_id: 'unknown'
       });
 
-      await eventLogTask;
+      socketIOServer.to(`device:${deviceId}`).emit("device:violation", {
+        device_id: deviceId,
+        violation_type: violationType,
+        violation_value: violationValue,
+        violation_unit: violationType === "SPEED_LIMIT" ? "km/h" : "minutes",
+        speed_violation_count: speedViolationCount,
+        trip_id: latestTrip?.id,
+        message_id: fakeMessageId,
+        time_stamp: payload.timestamp,
+      });
     } catch (error) {
       logger.error("Error handling new VehicleOperationViolation:", error);
     }
@@ -3137,12 +3226,15 @@ class MQTTService {
       const imageUrl = `http://103.216.116.186:9000/fleet-videos/${deviceId}-${payload.timestamp}-${contentTag}.jpeg`;
       const videoUrl = `http://103.216.116.186:9000/fleet-videos/${deviceId}-${payload.timestamp}-${contentTag}.mp4`;
 
+      const fakeMessageId = `v1.0.0-${payload.timestamp}`;
+      const eventId = `dms_${deviceId}_${fakeMessageId}`;
+
       eventLogService.logDMSEvent(
-        'unknown',
-        deviceId,
+        eventId,
+        this.vehicleId,
         {
           timestamp: new Date(payload.timestamp + this.tzOffsetMinutes).toISOString(),
-          messageId: 'unknown',
+          messageId: fakeMessageId,
           behaviorViolate: behaviorName,
           speed: location.speed || 0,
           location: {
@@ -3165,9 +3257,12 @@ class MQTTService {
         } : undefined
       );
 
+      const address = await this.getReverseGeocodingAddress(location.longitude, location.latitude);
+
       socketIOServer.emit("dms:violation", {
         device_id: deviceId,
         trip_id: latestTrip?.id,
+        trip_number: latestTrip?.tripNumber,
         behavior_violate: payload.type,
         behavior_name: behaviorName,
         speed: location.speed,
@@ -3175,9 +3270,23 @@ class MQTTService {
           latitude: location.latitude,
           longitude: location.longitude,
           gps_timestamp: location.gps_timestamp,
+          address: address,
         },
         image_url: imageUrl,
         video_url: videoUrl,
+        message_id: fakeMessageId,
+        time_stamp: payload.timestamp,
+      });
+
+      socketIOServer.to(`device:${deviceId}`).emit("device:dms:violation", {
+        device_id: deviceId,
+        behavior_violate: payload.type,
+        behavior_name: behaviorName,
+        speed: location.speed,
+        image_url: imageUrl,
+        video_url: videoUrl,
+        trip_id: latestTrip?.id,
+        message_id: fakeMessageId,
         time_stamp: payload.timestamp,
       });
 
@@ -3204,12 +3313,15 @@ class MQTTService {
       const seatNames = ["Front_Left", "Front_Right", "Rear_Left", "Rear_Right"];
       const seatName = seatNames[payload.violation_position] || "Unknown";
 
+      const fakeMessageId = `v1.0.0-${payload.timestamp}`;
+      const eventId = `oms_${deviceId}_${fakeMessageId}`;
+
       eventLogService.logDMSEvent(
-        'unknown',
-        deviceId,
+        eventId,
+        this.vehicleId,
         {
           timestamp: new Date(payload.timestamp + this.tzOffsetMinutes).toISOString(),
-          messageId: 'unknown',
+          messageId: fakeMessageId,
           behaviorViolate: `${behaviorName} (${seatName})`,
           speed: location.speed || 0,
           location: {
@@ -3232,9 +3344,12 @@ class MQTTService {
         } : undefined
       );
 
+      const address = await this.getReverseGeocodingAddress(location.longitude, location.latitude);
+
       socketIOServer.emit("oms:violation", {
         device_id: deviceId,
         trip_id: latestTrip?.id,
+        trip_number: latestTrip?.tripNumber,
         behavior_violate: payload.status,
         behavior_name: `${behaviorName} (${seatName})`,
         speed: location.speed,
@@ -3242,9 +3357,23 @@ class MQTTService {
           latitude: location.latitude,
           longitude: location.longitude,
           gps_timestamp: location.gps_timestamp,
+          address: address,
         },
         image_url: imageUrl,
         video_url: videoUrl,
+        message_id: fakeMessageId,
+        time_stamp: payload.timestamp,
+      });
+
+      socketIOServer.to(`device:${deviceId}`).emit("device:oms:violation", {
+        device_id: deviceId,
+        behavior_violate: payload.status,
+        behavior_name: `${behaviorName} (${seatName})`,
+        speed: location.speed,
+        image_url: imageUrl,
+        video_url: videoUrl,
+        trip_id: latestTrip?.id,
+        message_id: fakeMessageId,
         time_stamp: payload.timestamp,
       });
 
@@ -3273,12 +3402,21 @@ class MQTTService {
         this.driverId = authResult.id || "";
         logger.info(`New driver authenticated successfully: ${authResult.firstName} ${authResult.lastName} (ID: ${this.driverId})`);
         
-        socketIOServer.emit("driver:authenticated", {
+        socketIOServer.emit("driver:request", {
           device_id: deviceId,
-          message_id: 'unknown',
-          status: 'success',
           driver_id: authResult.id,
-          driver_name: `${authResult.firstName} ${authResult.lastName}`
+          message_id: 'unknown',
+          time_stamp: payload.timestamp,
+        });
+
+        socketIOServer.emit("driver:info", {
+          device_id: deviceId,
+          time_stamp: Date.now(),
+          message_id: 'unknown',
+          driver_information: {
+            driver_name: `${authResult.firstName} ${authResult.lastName}`,
+            driver_license_number: authResult.licenseNumber || "None",
+          },
         });
 
         this.publishWrapperResponse(deviceId, MqttDataType.DriverAuthenticationResponse, {
@@ -3293,11 +3431,21 @@ class MQTTService {
       } else {
         logger.warn(`Driver authentication failed (unmatched) for device ${deviceId}`);
         
-        socketIOServer.emit("driver:auth:failed", {
+        socketIOServer.emit("driver:request", {
           device_id: deviceId,
+          driver_id: "None",
           message_id: 'unknown',
-          status: 'failed',
-          message: 'Face not matched'
+          time_stamp: payload.timestamp,
+        });
+
+        socketIOServer.emit("driver:info", {
+          device_id: deviceId,
+          time_stamp: Date.now(),
+          message_id: 'unknown',
+          driver_information: {
+            driver_name: "None",
+            driver_license_number: "None",
+          },
         });
 
         this.publishWrapperResponse(deviceId, MqttDataType.DriverAuthenticationResponse, {
